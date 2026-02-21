@@ -1,30 +1,30 @@
 # High-Level Design (HLD)
 ## Jira-Like Project Management Application
 
-**Version**: 1.0  
-**Date**: February 21, 2026  
-**Author**: Architecture Team  
-**Status**: Approved
+**Version**: 2.0 | **Date**: February 21, 2026 | **Status**: Approved
+
+> Backend: **FastAPI (Python 3.12)** + SQLAlchemy 2.0 + Alembic + Pydantic v2.  
+> Frontend: **React 18 + TypeScript** (unchanged).  
+> Database: **PostgreSQL 15** (unchanged).
 
 ---
 
 ## 1. Introduction
 
 ### 1.1 Purpose
-This document describes the high-level design of the Jira-Like Project Management Application. It serves as the authoritative architectural blueprint for the engineering team, establishing system boundaries, major components, and interaction patterns across all four delivery phases.
+Authoritative architectural blueprint establishing system boundaries, major components, and interaction patterns across all four delivery phases.
 
-### 1.2 Scope
-The system enables teams to create and manage projects, plan and execute sprints, track tickets through a configurable workflow, collaborate via comments, and gain insight through analytics and reporting.
-
-### 1.3 Design Principles
+### 1.2 Design Principles
 | Principle | Rationale |
 |-----------|-----------|
-| **Separation of Concerns** | Frontend, backend, and data layers are decoupled and independently deployable |
-| **API-First** | All functionality exposed via versioned REST APIs; UI is just one consumer |
-| **Security by Default** | Authentication, authorization, and data protection baked in at every layer |
-| **Progressive Delivery** | Phased rollout: MVP → Enhanced → Analytics → Advanced |
-| **Horizontal Scalability** | Stateless services that scale out under load |
-| **Observability** | Logs, metrics, and traces captured from day one |
+| **API-First** | All functionality via versioned REST APIs; React SPA is just one consumer |
+| **Separation of Concerns** | Frontend, backend, and data layers independently deployable |
+| **Async-First Backend** | FastAPI + asyncpg + redis-py async for high-concurrency without threading overhead |
+| **Security by Default** | Auth, RBAC, and data protection at every layer |
+| **Pythonic Backend** | Enables Phase 3 analytics via Pandas/NumPy inside the same Python service |
+| **Progressive Delivery** | MVP → Enhanced → Analytics → Advanced (4 phases) |
+| **Horizontal Scalability** | Stateless FastAPI processes; all shared state in Redis |
+| **Observability** | Structured logs (structlog), metrics (CloudWatch), traces (AWS X-Ray) |
 
 ---
 
@@ -32,36 +32,33 @@ The system enables teams to create and manage projects, plan and execute sprints
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────┐
-│                           EXTERNAL WORLD                                │
+│                           EXTERNAL USERS                                │
 │                                                                         │
 │   ┌─────────────┐   ┌─────────────┐   ┌─────────────┐                 │
 │   │  Developer  │   │   Product   │   │  Scrum      │                 │
 │   │  (Browser)  │   │   Manager   │   │  Master     │                 │
 │   └──────┬──────┘   └──────┬──────┘   └──────┬──────┘                 │
-│          │                 │                  │                         │
-│          └─────────────────┴──────────────────┘                        │
-│                            │ HTTPS                                      │
-└────────────────────────────┼────────────────────────────────────────────┘
-                             │
+└──────────┼─────────────────┼─────────────────┼────────────────────────┘
+           └─────────────────┴─────────────────┘
+                             │ HTTPS / WSS
                     ┌────────▼────────┐
-                    │  Load Balancer  │
-                    │   (AWS ALB)     │
+                    │   AWS ALB       │
                     └────────┬────────┘
                              │
               ┌──────────────┼──────────────┐
               │              │              │
-     ┌────────▼────┐  ┌──────▼─────┐  ┌───▼──────────┐
-     │  React SPA  │  │  REST API  │  │  WebSocket   │
-     │  (CloudFront│  │  (NestJS)  │  │  Gateway     │
-     │  + S3)      │  │            │  │              │
-     └─────────────┘  └──────┬─────┘  └──────────────┘
+     ┌────────▼──────┐ ┌─────▼──────┐ ┌───▼────────────┐
+     │  React SPA    │ │  FastAPI   │ │  WebSocket     │
+     │  (CloudFront  │ │  REST API  │ │  (socketio)    │
+     │  + S3)        │ │  Python    │ │  /ws endpoint  │
+     └──────────────-┘ └─────┬──────┘ └────────────────┘
                              │
               ┌──────────────┼──────────────┐
               │              │              │
-     ┌────────▼────┐  ┌──────▼───┐  ┌──────▼────────┐
-     │ PostgreSQL  │  │  Redis   │  │  AWS S3       │
-     │  (RDS)      │  │  (Cache) │  │  (Files)      │
-     └─────────────┘  └──────────┘  └───────────────┘
+     ┌────────▼──-───┐ ┌─────▼─────┐ ┌─────▼─────────┐
+     │ PostgreSQL 15 │ │  Redis 7  │ │    AWS S3     │
+     │  (RDS Multi-AZ│ │(ElastiCache│ │  (Files)      │
+     └───────────────┘ └───────────┘ └───────────────┘
 ```
 
 ---
@@ -75,148 +72,141 @@ The system enables teams to create and manage projects, plan and execute sprints
 | State Management | Redux Toolkit + React Query (TanStack) |
 | Styling | TailwindCSS + shadcn/ui |
 | Routing | React Router v6 |
-| Real-time | Socket.IO Client |
+| Real-time Client | Socket.IO Client 4.x |
+| HTTP Client | Axios |
 | Hosting | AWS CloudFront + S3 |
 
-**Responsibilities**:
-- Render all user-facing interfaces
-- Manage client-side state (auth tokens, UI preferences)
-- Communicate with backend exclusively via REST and WebSocket
-- Handle optimistic UI updates for drag-and-drop operations
-
-### 3.2 Backend API (NestJS Monolith → Modular)
+### 3.2 Backend API (FastAPI — Python 3.12)
 | Attribute | Value |
 |-----------|-------|
-| Technology | Node.js 20 LTS + NestJS + TypeScript |
-| ORM | Prisma |
-| Authentication | JWT (Access Token 15min + Refresh Token 7d) |
-| Documentation | OpenAPI / Swagger |
-| Hosting | AWS ECS Fargate |
+| Framework | FastAPI 0.110+ |
+| Runtime | Python 3.12 + Uvicorn ASGI |
+| ORM | SQLAlchemy 2.0 (async) |
+| DB Driver | asyncpg |
+| Migrations | Alembic |
+| Schema Validation | Pydantic v2 |
+| Authentication | python-jose (JWT HS256) + passlib (bcrypt) |
+| API Docs | Auto-generated OpenAPI / Swagger UI at `/docs` |
+| Real-time | python-socketio 5.x + AsyncRedisManager |
+| Rate Limiting | slowapi |
+| Hosting | AWS ECS Fargate (python:3.12-slim container) |
 
-**Modules** (NestJS feature modules):
+#### FastAPI Router Structure
 ```
-src/
-├── auth/           → Registration, login, JWT, refresh
-├── users/          → Profile, preferences, RBAC
-├── projects/       → Project CRUD, members, settings
-├── tickets/        → Ticket CRUD, transitions, labels
-├── sprints/        → Sprint lifecycle, board, planning
-├── comments/       → Comment CRUD, @mentions
-├── notifications/  → In-app + email notifications
-├── search/         → Full-text search, filters
-├── reports/        → Burndown, velocity, analytics
-└── realtime/       → WebSocket gateway (Socket.IO)
+app/
+├── main.py                  ← app factory, lifespan hooks, CORS, middleware
+├── core/
+│   ├── config.py            ← pydantic-settings (DATABASE_URL, JWT_SECRET, etc.)
+│   ├── security.py          ← create_access_token(), verify_token(), hash_password()
+│   ├── database.py          ← create_async_engine(), AsyncSessionLocal, get_db()
+│   └── redis.py             ← get_redis() async dependency
+├── api/
+│   └── v1/
+│       ├── router.py        ← aggregates all sub-routers under /api/v1
+│       ├── auth.py          ← POST /auth/login, /register, /refresh, /logout
+│       ├── users.py         ← GET/PUT /users/me
+│       ├── projects.py      ← CRUD /projects, /projects/{id}/members
+│       ├── tickets.py       ← CRUD /tickets, /tickets/{id}/transition
+│       ├── sprints.py       ← CRUD /sprints, /sprints/{id}/start, /complete
+│       ├── comments.py      ← CRUD /tickets/{id}/comments
+│       ├── search.py        ← GET /search/tickets
+│       └── notifications.py ← GET /notifications
+├── models/                  ← SQLAlchemy ORM declarative models
+├── schemas/                 ← Pydantic v2 BaseModel request/response schemas
+├── services/                ← Business logic layer (async Python classes)
+├── repositories/            ← DB query layer (SQLAlchemy select/insert/update)
+├── dependencies/            ← FastAPI Depends() — auth, RBAC, pagination, db session
+├── websocket/               ← python-socketio server + event handler registrations
+└── migrations/              ← Alembic revision files
 ```
 
-### 3.3 Primary Database (PostgreSQL)
-| Attribute | Value |
-|-----------|-------|
-| Technology | PostgreSQL 15 |
-| Hosting | AWS RDS (Multi-AZ for production) |
-| Schema Management | Prisma Migrations |
-| Backup | Automated daily snapshots, 30-day retention |
+### 3.3 Primary Database (PostgreSQL 15)
+- Hosted on AWS RDS Multi-AZ (production)
+- Connected via `asyncpg` driver with SQLAlchemy async sessions
+- Migrations managed by Alembic (`alembic upgrade head` in ECS task on deployment)
+- **Core tables**: `users`, `projects`, `project_members`, `tickets`, `ticket_history`, `sprints`, `sprint_tickets`, `comments`, `labels`, `ticket_labels`, `notifications`
 
-**Core Schemas**: `users`, `projects`, `project_members`, `tickets`, `ticket_history`, `sprints`, `comments`, `labels`, `notifications`
+### 3.4 Cache Layer (Redis 7)
+| Data | Cache Key | TTL |
+|------|-----------|-----|
+| Sprint Board | `board:{sprint_id}` | 5 min |
+| Active Sprint | `project:{id}:active_sprint` | 10 min |
+| User Profile | `user:{id}:profile` | 30 min |
+| Refresh Tokens | `rt:{user_id}:{jti}` | 7 days |
+| Rate Limit | `rl:{ip}:{endpoint}` | 60 sec |
 
-### 3.4 Cache Layer (Redis)
-| Attribute | Value |
-|-----------|-------|
-| Technology | Redis 7 |
-| Hosting | AWS ElastiCache |
-| TTL Strategy | Short (5min) for board data; Long (1hr) for user sessions |
+### 3.5 Real-time (python-socketio)
+- `socketio.ASGIApp` mounted inside FastAPI at `/ws`
+- `AsyncRedisManager` for multi-ECS-task room broadcasting
+- Rooms: `board:{sprint_id}`, `ticket:{ticket_id}`, `user:{user_id}`
 
-**Cached Resources**:
-- User sessions and JWT refresh token storage
-- Sprint board state (heavily-read, infrequently-written)
-- Active sprint metadata per project
-- Rate-limiting counters
+### 3.6 File Storage (AWS S3)
+- Attachments uploaded via pre-signed POST URL generated by `boto3`
+- Max 25 MB per file; virus scanning in Phase 2
 
-### 3.5 File Storage (AWS S3)
-- Ticket attachments stored in versioned S3 buckets
-- Pre-signed URL generation for secure time-limited access
-- Maximum file size: 25 MB per attachment
-- Supported types: images, PDFs, documents, archives
-
-### 3.6 Email Service (AWS SES)
-- Transactional email delivery (registration, password reset, notifications)
-- Phase 2+ feature; stubbed in Phase 1
-
-### 3.7 Real-time Gateway (Socket.IO)
-- WebSocket connections for live board updates
-- Ticket status changes broadcast to all board viewers
-- Comment additions streamed in real-time
-- Presence indicators (who is viewing a ticket)
+### 3.7 Email (AWS SES)
+- Transactional email via `boto3` SES client
+- Stubbed as `NotificationService.queue_email()` in Phase 1, wired in Phase 2
 
 ---
 
 ## 4. Delivery Phases
 
-### Phase 1 — MVP (Weeks 1–10)
-**Goal**: A functional, deployable product that a team can use to manage work.
-
-| Feature Area | Scope |
-|---|---|
-| Authentication | Registration, login, JWT, RBAC (4 roles) |
-| Project Management | Create, configure, invite members |
-| Ticket Management | Full CRUD, status transitions, assignment, labels |
-| Sprint Management | Create, start, complete; sprint board (Kanban) |
-| Backlog | Prioritized list, drag to reorder |
-| Search & Filter | Basic search by ID/keyword; filter by status/assignee/priority |
+### Phase 1 — MVP (Weeks 1–10) ← CURRENT
+| Feature | Scope |
+|---------|-------|
+| Auth | Registration, login, JWT, RBAC (4 roles) |
+| Projects | Create, configure, invite members |
+| Tickets | Full CRUD, status transitions, assignment, labels, priorities |
+| Sprints | Create, start, complete; Kanban board |
+| Backlog | Prioritized list, drag-to-reorder |
+| Search | Basic keyword + filter by status/assignee/priority |
 
 ### Phase 2 — Enhanced (Weeks 11–18)
-| Feature Area | Scope |
-|---|---|
-| Collaboration | Comments, @mentions, watchers |
-| Relationships | Ticket linking, dependencies |
-| Bulk Operations | Bulk status, assignment, sprint move |
-| Activity Log | Full audit trail per ticket |
-| Email Notifications | Assignment, mentions, sprint events |
-| File Attachments | Upload and view on ticket detail |
+Comments, @mentions, ticket linking, bulk operations, audit log, email notifications, file attachments
 
 ### Phase 3 — Analytics (Weeks 19–24)
-| Feature Area | Scope |
-|---|---|
-| Sprint Reports | Burndown chart, velocity chart |
-| Project Dashboard | Cumulative flow, ticket age, created vs. resolved |
-| User Reports | Individual velocity, workload distribution |
-| Performance | Query optimization, CDN caching, lazy loading |
+Burndown / velocity charts (Pandas/NumPy on Python backend), cumulative flow, workload distribution
 
 ### Phase 4 — Advanced (Future)
-| Feature Area | Scope |
-|---|---|
-| Real-time Collaboration | Live cursor, simultaneous editing |
-| Workflow Automation | Triggers and actions (e.g., auto-assign on creation) |
-| Integrations | GitHub, Slack, Webhook |
-| Custom Fields | Admin-defined field types per project |
-| Advanced Analytics | Custom JQL-like query language |
+Real-time collaboration, workflow automation, GitHub/Slack integrations, ML-based ticket assignment
 
 ---
 
-## 5. Data Flow Overview
+## 5. Data Flow Patterns
 
-### 5.1 Typical Read Flow
+### 5.1 Read Flow (Cache Hit)
 ```
-Browser → CloudFront → ALB → ECS (NestJS) → Redis Cache Hit → Response
-                                           ↓ Cache Miss
-                                       PostgreSQL → Response + Cache Write
+Browser → CloudFront → ALB → ECS FastAPI → Redis HIT → 200 Response
 ```
 
-### 5.2 Typical Write Flow
+### 5.2 Read Flow (Cache Miss)
 ```
-Browser → ALB → ECS (NestJS) → PostgreSQL (Write)
-                             → Redis (Invalidate Cache)
-                             → Socket.IO Gateway (Broadcast Event)
-                             → SES (Trigger Email if needed)
+Browser → ALB → ECS FastAPI → Redis MISS → PostgreSQL (asyncpg)
+                                         → Cache Write → 200 Response
 ```
 
-### 5.3 Authentication Flow
+### 5.3 Write Flow
 ```
-Login Request → Auth Module → bcrypt verify → JWT sign (Access + Refresh)
-                           → Store Refresh in Redis
-                           → Return tokens to client
+Browser → ALB → ECS FastAPI → PostgreSQL write (async)
+                             → Redis cache invalidation
+                             → python-socketio broadcast to room
+                             → SES email queue (Phase 2)
+```
 
-Subsequent Requests → JWT Guard → Decode Access Token → Attach user to request
-Token Expired → Refresh endpoint → Validate Refresh from Redis → New pair issued
+### 5.4 Auth Flow
+```
+POST /auth/login
+  → passlib verify_password(plain, hashed)
+  → python-jose create_access_token (HS256, 15min)
+  → UUID4 refresh_token stored in Redis (7d)
+  → Response: { access_token } + HttpOnly cookie: refresh_token
+
+GET /api/v1/any-protected-route
+  → Depends(get_current_user)
+  → python-jose decode JWT
+  → SQLAlchemy fetch user (with cache)
+  → 401 if expired or not found
 ```
 
 ---
@@ -224,64 +214,53 @@ Token Expired → Refresh endpoint → Validate Refresh from Redis → New pair 
 ## 6. Cross-Cutting Concerns
 
 ### 6.1 Security
-- All endpoints protected by JWT Guard except `/auth/register`, `/auth/login`
-- RBAC enforced per resource and per operation (Guard + Decorator pattern)
-- Passwords hashed with bcrypt (cost factor 12)
-- Input validation via `class-validator` on all DTOs
-- Rate limiting: 100 req/min per IP (general), 10 req/min (auth endpoints)
-- CORS restricted to allowed origins only
-- SQL injection prevented by Prisma parameterized queries
+- All routes protected via `Depends(get_current_user)` except public auth endpoints
+- RBAC via `Depends(require_project_role(ProjectRole.OWNER, ProjectRole.MEMBER))`
+- Passwords: `passlib.context.CryptContext(schemes=["bcrypt"], deprecated="auto")` cost=12
+- Pydantic v2 validation: automatic 422 on malformed input with detailed field errors
+- Rate limiting via `slowapi` (100 req/min general, 10 req/min on `/auth/*`)
+- CORS restricted to allowed frontend origins via FastAPI `CORSMiddleware`
+- SQL injection impossible via SQLAlchemy parameterized statements
 
-### 6.2 Error Handling
-- Global exception filter returns RFC 7807 Problem Detail format
-- HTTP 4xx errors logged at WARN; 5xx errors logged at ERROR with stack trace
-- Frontend displays user-friendly messages mapped from error codes
-
-### 6.3 Logging & Observability
-- Structured JSON logs (Winston + correlation ID per request)
-- Metrics collected by AWS CloudWatch
-- Distributed traces via AWS X-Ray
-- Alerts on error rate > 1% and P95 latency > 500ms
-
-### 6.4 API Versioning
-- URL-based versioning: `/api/v1/...`
-- Deprecation headers added for sunset versions
+### 6.2 Observability
+- Structured JSON logs: `structlog` with correlation ID injected by middleware
+- Metrics: AWS CloudWatch (ECS + custom `boto3` metrics)
+- Traces: AWS X-Ray via `aws-xray-sdk` middleware
+- Alerts: error rate > 1%, P95 latency > 500ms
 
 ---
 
 ## 7. Technology Stack Summary
 
 | Layer | Technology | Version |
-|---|---|---|
+|-------|------------|---------|
 | Frontend Framework | React | 18 |
 | Frontend Language | TypeScript | 5.x |
 | Frontend Build | Vite | 5.x |
 | Frontend State | Redux Toolkit + React Query | Latest |
 | Frontend UI | TailwindCSS + shadcn/ui | Latest |
-| Backend Runtime | Node.js | 20 LTS |
-| Backend Framework | NestJS | 10.x |
-| Backend Language | TypeScript | 5.x |
-| ORM | Prisma | 5.x |
+| Frontend Real-time | Socket.IO Client | 4.x |
+| Backend Runtime | Python | 3.12 |
+| Backend Framework | FastAPI | 0.110+ |
+| Backend Server | Uvicorn (ASGI) | Latest |
+| ORM | SQLAlchemy 2.0 (async) | 2.x |
+| DB Driver | asyncpg | Latest |
+| Migrations | Alembic | Latest |
+| Schema Validation | Pydantic v2 | 2.x |
+| Auth JWT | python-jose | 3.x |
+| Auth Passwords | passlib + bcrypt | Latest |
+| Redis Client | redis-py (async) | 5.x |
+| Real-time Server | python-socketio | 5.x |
+| Rate Limiting | slowapi | Latest |
+| Structured Logging | structlog | Latest |
+| HTTP Test Client | httpx | Latest |
 | Primary Database | PostgreSQL | 15 |
 | Cache | Redis | 7 |
-| Real-time | Socket.IO | 4.x |
-| File Storage | AWS S3 | - |
-| Email | AWS SES | - |
-| Container | Docker | Latest |
+| File Storage | AWS S3 (boto3) | Latest |
+| Email | AWS SES (boto3) | Latest |
+| Container | Docker (python:3.12-slim) | Latest |
 | Orchestration | AWS ECS Fargate | - |
 | CI/CD | GitHub Actions | - |
-
----
-
-## 8. Assumptions and Constraints
-
-| Item | Detail |
-|---|---|
-| Users | Up to 1,000 concurrent users initially; 10,000 target by Phase 3 |
-| Data Volume | Up to 100 projects, 10,000+ tickets at MVP |
-| Browser Support | Chrome, Firefox, Safari, Edge (latest 2 versions) |
-| Mobile | Responsive web; no native app in Phase 1–3 |
-| Availability | 99.9% SLA (≤8.7 hours downtime/year) |
-| RTO | 1 hour |
-| RPO | 24 hours (daily backup) |
-| Compliance | No PII regulations beyond standard data protection in Phase 1 |
+| Backend Testing | pytest + pytest-asyncio | Latest |
+| Frontend Testing | Vitest + React Testing Library | Latest |
+| E2E Testing | Playwright | Latest |

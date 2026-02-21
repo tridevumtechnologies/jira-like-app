@@ -1,8 +1,10 @@
 # Design Documentation — Jira-Like App
 
 **Project**: Jira-Like Project Management Application  
-**Stack**: MARN (MongoDB-style via PostgreSQL · AWS · React · NestJS)  
-**Version**: 1.0 | **Date**: February 21, 2026
+**Stack**: RAPP (React · AWS · PostgreSQL · Python/FastAPI)  
+**Version**: 2.0 | **Date**: February 21, 2026
+
+> **Stack**: Frontend → React 18 + TypeScript; Backend → FastAPI (Python 3.12); Database → PostgreSQL 15; Cloud → AWS.
 
 ---
 
@@ -13,7 +15,7 @@
 | 01 | [High-Level Design](./01-HIGH-LEVEL-DESIGN.md) | System context, major components, delivery phases, design principles |
 | 02 | [System Architecture](./02-SYSTEM-ARCHITECTURE.md) | Component architecture, API contracts, real-time design, security, caching |
 | 03 | [Production Cloud Architecture](./03-CLOUD-ARCHITECTURE.md) | AWS infrastructure, security groups, CI/CD pipeline, DR strategy, cost estimate |
-| 04 | [Low-Level Design](./04-LOW-LEVEL-DESIGN.md) | Prisma schema, DB indexes, NestJS module internals, DTO definitions, Redis key design |
+| 04 | [Low-Level Design](./04-LOW-LEVEL-DESIGN.md) | SQLAlchemy schema, DB indexes, FastAPI router internals, Pydantic schemas, Redis key design |
 | 05 | [Phase 1 Mermaid Diagrams](./05-PHASE1-MERMAID-DIAGRAMS.md) | 12 Mermaid diagrams covering all key flows for MVP delivery |
 
 ---
@@ -27,7 +29,7 @@ Users (Browser)
 CloudFront + ALB (AWS)
       │
       ▼
-NestJS API (ECS Fargate, Multi-AZ, Auto-scaling)
+FastAPI (Python 3.12 on ECS Fargate, Multi-AZ, Auto-scaling)
       │
   ┌───┼───────────┐
   │   │           │
@@ -35,6 +37,30 @@ NestJS API (ECS Fargate, Multi-AZ, Auto-scaling)
 PostgreSQL  Redis    S3
 (RDS)    (ElastiCache) (Attachments)
 ```
+
+---
+
+## Technology Stack Summary
+
+| Layer | Technology |
+|-------|------------|
+| Frontend | React 18 + TypeScript + Vite |
+| Frontend State | Redux Toolkit + React Query (TanStack) |
+| Frontend UI | TailwindCSS + shadcn/ui |
+| Backend | FastAPI (Python 3.12) |
+| Backend ORM | SQLAlchemy 2.0 (async) + Alembic |
+| Schema Validation | Pydantic v2 |
+| Authentication | python-jose (JWT) + passlib/bcrypt |
+| Real-time | FastAPI WebSockets + python-socketio |
+| Primary Database | PostgreSQL 15 (AWS RDS) |
+| Cache | Redis 7 (AWS ElastiCache) |
+| File Storage | AWS S3 |
+| Email | AWS SES |
+| Container | Docker (python:3.12-slim) |
+| Orchestration | AWS ECS Fargate |
+| CI/CD | GitHub Actions |
+| Backend Testing | pytest + httpx + pytest-asyncio |
+| Frontend Testing | Vitest + React Testing Library + Playwright |
 
 ---
 

@@ -1,204 +1,185 @@
 # System Architecture Document
 ## Jira-Like Project Management Application
 
-**Version**: 1.0  
-**Date**: February 21, 2026  
-**Author**: Architecture Team  
-**Status**: Approved
+**Version**: 2.0 | **Date**: February 21, 2026 | **Status**: Approved
+
+> **v2.0**: Backend is **FastAPI (Python 3.12)**. ORM is **SQLAlchemy 2.0 (async) + Alembic**. Schemas are **Pydantic v2 BaseModel**. Frontend (React + TypeScript), Database (PostgreSQL 15), and Cloud (AWS) are unchanged.
 
 ---
 
-## 1. Architecture Overview
-
-The system is designed as a **MARN** stack application:
+## 1. Architecture Overview — RAPP Stack
 
 | Letter | Technology | Role |
 |--------|------------|------|
-| **M** | MongoDB-compatible / **PostgreSQL** (Relational) | Primary data store |
-| **A** | **AWS** | Cloud hosting & managed services |
-| **R** | **React** | Frontend SPA |
-| **N** | **NestJS** (Node.js) | Backend API |
+| **R** | React 18 + TypeScript | Frontend SPA |
+| **A** | AWS (ECS, RDS, ElastiCache, S3, CloudFront) | Cloud hosting |
+| **P** | PostgreSQL 15 | Primary relational data store |
+| **P** | Python 3.12 / FastAPI | Backend REST + WebSocket API |
 
-> Note: We use PostgreSQL (not MongoDB) as the relational nature of projects, tickets, sprints, and members benefits from ACID transactions and foreign-key integrity.
+**Why FastAPI over NestJS?**
+- Native async/await without Node.js event-loop limitations
+- Pydantic v2 provides zero-cost serialization/validation via Rust-backed core
+- Auto-generated OpenAPI docs with no extra configuration
+- Python ecosystem enables future analytics phase (Pandas, NumPy, scikit-learn) inside same service boundary
 
 ---
 
 ## 2. Component Architecture Diagram
 
 ```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                              CLIENT TIER                                    │
-│                                                                             │
-│  ┌───────────────────────────────────────────────────────────────────────┐  │
-│  │                     React SPA (Browser)                               │  │
-│  │                                                                       │  │
-│  │  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐            │  │
-│  │  │  Auth    │  │ Projects │  │  Board   │  │ Reports  │            │  │
-│  │  │  Module  │  │  Module  │  │  Module  │  │  Module  │            │  │
-│  │  └──────────┘  └──────────┘  └──────────┘  └──────────┘            │  │
-│  │                                                                       │  │
-│  │  ┌──────────────────┐    ┌──────────────────┐                       │  │
-│  │  │   Redux Store     │    │   React Query    │                       │  │
-│  │  │ (auth, ui state) │    │ (server cache)   │                       │  │
-│  │  └──────────────────┘    └──────────────────┘                       │  │
-│  │                                                                       │  │
-│  │  ┌────────────────────────────────────────────────────────────────┐  │  │
-│  │  │         Axios HTTP Client + Socket.IO Client                   │  │  │
-│  │  └────────────────────────────────────────────────────────────────┘  │  │
-│  └───────────────────────────────────────────────────────────────────────┘  │
-└────────────────────────┬────────────────────────────┬───────────────────────┘
-                         │ REST/HTTPS                  │ WebSocket (WSS)
-                         │                             │
-┌────────────────────────▼─────────────────────────────▼───────────────────────┐
-│                              API TIER (NestJS)                                │
+┌──────────────────────────────────────────────────────────────────────────────┐
+│                              CLIENT TIER                                     │
+│                                                                              │
+│  ┌──────────────────────────────────────────────────────────────────────┐   │
+│  │                     React SPA (Browser)                              │   │
+│  │                                                                      │   │
+│  │  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐           │   │
+│  │  │  Auth    │  │ Projects │  │  Board   │  │ Reports  │           │   │
+│  │  │  Pages   │  │  Pages   │  │  Pages   │  │  Pages   │           │   │
+│  │  └──────────┘  └──────────┘  └──────────┘  └──────────┘           │   │
+│  │                                                                      │   │
+│  │  ┌──────────────────┐    ┌──────────────────┐                      │   │
+│  │  │   Redux Store    │    │   React Query    │                      │   │
+│  │  │ (auth, ui, notif)│    │ (server state)   │                      │   │
+│  │  └──────────────────┘    └──────────────────┘                      │   │
+│  │                                                                      │   │
+│  │  ┌───────────────────────────────────────────────────────────────┐  │   │
+│  │  │   Axios REST Client  │  Socket.IO Client (WSS)                │  │   │
+│  │  └───────────────────────────────────────────────────────────────┘  │   │
+│  └──────────────────────────────────────────────────────────────────────┘   │
+└─────────────────────────┬──────────────────────────┬────────────────────────┘
+                          │ REST / HTTPS              │ WebSocket (WSS)
+                          │                           │
+┌─────────────────────────▼───────────────────────────▼────────────────────────┐
+│                   API TIER — FastAPI (Python 3.12, Uvicorn ASGI)              │
 │                                                                               │
-│  ┌─────────────────────────────────────────────────────────────────────────┐  │
-│  │                          Request Pipeline                               │  │
-│  │  Request → Logger → CORS → RateLimit → Auth Guard → RBAC Guard        │  │
-│  │  Response ← Global Exception Filter ← Serializer ← Controller         │  │
-│  └─────────────────────────────────────────────────────────────────────────┘  │
+│  ┌────────────────────────────────────────────────────────────────────────┐  │
+│  │                     Middleware Pipeline (LIFO)                         │  │
+│  │  Incoming →  CorrelationID  →  CORS  →  RateLimitMiddleware           │  │
+│  │          →  X-Ray Tracing  →  RequestLogger  → Router dispatch        │  │
+│  │  Outgoing ← GlobalExceptionHandler ← Pydantic serialize ← Response   │  │
+│  └────────────────────────────────────────────────────────────────────────┘  │
 │                                                                               │
-│  ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌──────────┐          │
-│  │   Auth   │ │  Users   │ │ Projects │ │ Tickets  │ │ Sprints  │          │
-│  │ Module   │ │  Module  │ │  Module  │ │  Module  │ │  Module  │          │
-│  └──────────┘ └──────────┘ └──────────┘ └──────────┘ └──────────┘          │
+│  ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌──────────┐         │
+│  │  auth    │ │  users   │ │ projects │ │ tickets  │ │ sprints  │         │
+│  │ router   │ │  router  │ │  router  │ │  router  │ │  router  │         │
+│  │/api/v1/  │ │/api/v1/  │ │/api/v1/  │ │/api/v1/  │ │/api/v1/  │         │
+│  │auth/*    │ │users/*   │ │projects/*│ │tickets/* │ │sprints/* │         │
+│  └──────────┘ └──────────┘ └──────────┘ └──────────┘ └──────────┘         │
 │                                                                               │
-│  ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌──────────┐                       │
-│  │Comments  │ │  Search  │ │ Reports  │ │Realtime  │                       │
-│  │  Module  │ │  Module  │ │  Module  │ │(Socket)  │                       │
-│  └──────────┘ └──────────┘ └──────────┘ └──────────┘                       │
+│  ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌─────────────────────────────┐    │
+│  │comments  │ │  search  │ │notificat.│ │  python-socketio             │    │
+│  │  router  │ │  router  │ │  router  │ │  ASGIApp at /ws              │    │
+│  └──────────┘ └──────────┘ └──────────┘ └─────────────────────────────┘    │
 │                                                                               │
-│  ┌─────────────────────────────────────────────────────────────────────────┐  │
-│  │                        Shared Infrastructure                            │  │
-│  │   PrismaService │ RedisService │ MailService │ StorageService          │  │
-│  └─────────────────────────────────────────────────────────────────────────┘  │
-└──────────┬────────────────────┬─────────────────────┬─────────────────────────┘
-           │                    │                      │
-┌──────────▼──────┐  ┌──────────▼──────┐  ┌──────────▼──────┐
-│  DATA TIER      │  │  CACHE TIER     │  │  STORAGE TIER   │
-│                 │  │                 │  │                 │
-│  PostgreSQL 15  │  │    Redis 7      │  │    AWS S3       │
-│  (AWS RDS)      │  │  (ElastiCache)  │  │  (Attachments)  │
-│                 │  │                 │  │                 │
-│  - users        │  │ - Sessions      │  │ - /attachments/ │
-│  - projects     │  │ - Board State   │  │ - /avatars/     │
-│  - tickets      │  │ - Rate Limits   │  │                 │
-│  - sprints      │  │ - Active Sprint │  │                 │
-│  - comments     │  │ - Token Blklist │  │                 │
-└─────────────────┘  └─────────────────┘  └─────────────────┘
+│  ┌────────────────────────────────────────────────────────────────────────┐  │
+│  │                     Shared Infrastructure Layer                        │  │
+│  │  AsyncSession (SQLAlchemy + asyncpg)  │  Redis (redis-py async)       │  │
+│  │  Security (python-jose + passlib)     │  S3 / SES (boto3)             │  │
+│  │  Settings (pydantic-settings)         │  Structlog / X-Ray            │  │
+│  └────────────────────────────────────────────────────────────────────────┘  │
+└──────────┬─────────────────────┬──────────────────────┬──────────────────────┘
+           │                     │                       │
+┌──────────▼────────┐  ┌─────────▼──────────┐  ┌────────▼──────────┐
+│  DATA TIER        │  │  CACHE TIER         │  │  STORAGE TIER     │
+│  PostgreSQL 15    │  │  Redis 7            │  │  AWS S3           │
+│  (AWS RDS)        │  │  (AWS ElastiCache)  │  │  (boto3 SDK)      │
+│  asyncpg driver   │  │  redis-py async     │  │                   │
+│                   │  │                     │  │ /attachments/{id} │
+│  tables:          │  │  board:{sprint_id}  │  │ /avatars/{user_id}│
+│  users            │  │  project:{id}:      │  │                   │
+│  projects         │  │    active_sprint    │  └───────────────────┘
+│  project_members  │  │  user:{id}:profile  │
+│  tickets          │  │  rt:{uid}:{jti}     │
+│  ticket_history   │  │  rl:{ip}:{endpoint} │
+│  sprints          │  └─────────────────────┘
+│  sprint_tickets   │
+│  comments         │
+│  labels           │
+│  ticket_labels    │
+│  notifications    │
+└───────────────────┘
 ```
 
 ---
 
-## 3. Module Interaction Matrix
+## 3. REST API Design
 
-| Source Module | Target Module | Interaction Type | Description |
-|---------------|---------------|-----------------|-------------|
-| Auth | Users | In-process call | Validate user credentials on login |
-| Auth | Redis | Cache write | Store refresh tokens |
-| Projects | Users | In-process call | Verify user membership |
-| Tickets | Projects | In-process call | Validate project access |
-| Tickets | Sprints | In-process call | Assign ticket to sprint |
-| Tickets | Realtime | Event emit | Broadcast ticket update |
-| Sprints | Tickets | In-process call | Bulk ticket status on sprint complete |
-| Comments | Notifications | Event emit | Trigger notification on new comment |
-| Search | PostgreSQL | Full-text query | `tsvector` search over titles/descriptions |
-| Reports | PostgreSQL | Aggregation query | Burndown, velocity calculations |
-
----
-
-## 4. API Design
-
-### 4.1 Base URL Structure
+### 3.1 Base URL
 ```
 https://api.yourdomain.com/api/v1/
 ```
+FastAPI auto-serves:
+- `/docs` — Swagger UI
+- `/redoc` — ReDoc
+- `/openapi.json` — raw schema
 
-### 4.2 Authentication Endpoints
-| Method | Endpoint | Description | Auth Required |
-|--------|----------|-------------|---------------|
-| POST | `/auth/register` | Create new account | No |
-| POST | `/auth/login` | Login, receive tokens | No |
-| POST | `/auth/logout` | Invalidate refresh token | Yes |
-| POST | `/auth/refresh` | Exchange refresh for new access token | No (uses refresh) |
-| POST | `/auth/forgot-password` | Request password reset email | No |
-| POST | `/auth/reset-password` | Apply new password via token | No |
-| GET | `/auth/me` | Get current user profile | Yes |
+### 3.2 Authentication Endpoints
+| Method | Endpoint | Description | Auth |
+|--------|----------|-------------|------|
+| POST | `/auth/register` | Create account | No |
+| POST | `/auth/login` | Login → `access_token` + refresh cookie | No |
+| POST | `/auth/logout` | Revoke refresh token | Yes |
+| POST | `/auth/refresh` | New token pair from refresh cookie | Cookie |
+| POST | `/auth/forgot-password` | Request reset email | No |
+| POST | `/auth/reset-password` | Apply new password | No |
+| GET | `/auth/me` | Current user profile | Yes |
 
-### 4.3 User Endpoints
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| GET | `/users/me` | Get own profile |
-| PUT | `/users/me` | Update own profile |
-| PUT | `/users/me/password` | Change password |
-| GET | `/users/:id` | Get user by ID (project member lookup) |
-
-### 4.4 Project Endpoints
+### 3.3 Project Endpoints
 | Method | Endpoint | Description |
 |--------|----------|-------------|
 | POST | `/projects` | Create project |
 | GET | `/projects` | List user's projects |
-| GET | `/projects/:id` | Get project detail |
-| PUT | `/projects/:id` | Update project |
-| DELETE | `/projects/:id` | Soft-delete project |
-| GET | `/projects/:id/members` | List members |
-| POST | `/projects/:id/members` | Invite member |
-| PUT | `/projects/:id/members/:userId` | Update member role |
-| DELETE | `/projects/:id/members/:userId` | Remove member |
+| GET | `/projects/{id}` | Get project detail |
+| PUT | `/projects/{id}` | Update project |
+| DELETE | `/projects/{id}` | Soft-delete project |
+| GET | `/projects/{id}/members` | List members |
+| POST | `/projects/{id}/members` | Invite member |
+| PUT | `/projects/{id}/members/{user_id}` | Update member role |
+| DELETE | `/projects/{id}/members/{user_id}` | Remove member |
 
-### 4.5 Ticket Endpoints
+### 3.4 Ticket Endpoints
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| POST | `/projects/:id/tickets` | Create ticket |
-| GET | `/projects/:id/tickets` | List tickets (paginated, filterable) |
-| GET | `/tickets/:id` | Get ticket detail |
-| PUT | `/tickets/:id` | Update ticket fields |
-| DELETE | `/tickets/:id` | Soft-delete ticket |
-| POST | `/tickets/:id/transition` | Change workflow status |
-| PUT | `/tickets/:id/sprint` | Assign to sprint |
-| POST | `/tickets/:id/labels` | Attach label |
-| DELETE | `/tickets/:id/labels/:labelId` | Remove label |
-| GET | `/tickets/:id/history` | Get activity log |
-| POST | `/tickets/:id/watch` | Watch ticket |
-| DELETE | `/tickets/:id/watch` | Unwatch ticket |
-| GET | `/tickets/search` | Search tickets with query params |
+| POST | `/projects/{id}/tickets` | Create ticket |
+| GET | `/projects/{id}/tickets` | List tickets (paginated + filterable) |
+| GET | `/tickets/{id}` | Get ticket detail |
+| PUT | `/tickets/{id}` | Update ticket fields |
+| DELETE | `/tickets/{id}` | Soft-delete |
+| POST | `/tickets/{id}/transition` | Status workflow transition |
+| PUT | `/tickets/{id}/sprint` | Assign/remove from sprint |
+| GET | `/tickets/{id}/history` | Activity log |
+| POST | `/tickets/{id}/watch` | Watch ticket |
+| DELETE | `/tickets/{id}/watch` | Unwatch |
+| GET | `/search/tickets` | Full-text search + filters |
 
-### 4.6 Sprint Endpoints
+### 3.5 Sprint Endpoints
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| POST | `/projects/:id/sprints` | Create sprint |
-| GET | `/projects/:id/sprints` | List sprints |
-| GET | `/sprints/:id` | Get sprint detail |
-| PUT | `/sprints/:id` | Update sprint |
-| POST | `/sprints/:id/start` | Activate sprint |
-| POST | `/sprints/:id/complete` | Complete sprint |
-| GET | `/sprints/:id/board` | Get board (grouped by status) |
-| GET | `/sprints/:id/stats` | Sprint statistics |
-| PUT | `/sprints/:id/tickets` | Bulk assign tickets to sprint |
-| GET | `/projects/:id/backlog` | Get project backlog |
+| POST | `/projects/{id}/sprints` | Create sprint |
+| GET | `/projects/{id}/sprints` | List sprints |
+| GET | `/sprints/{id}` | Sprint detail |
+| PUT | `/sprints/{id}` | Update sprint details |
+| POST | `/sprints/{id}/start` | Activate sprint |
+| POST | `/sprints/{id}/complete` | Complete sprint |
+| GET | `/sprints/{id}/board` | Board grouped by status |
+| GET | `/sprints/{id}/stats` | Sprint statistics |
+| GET | `/projects/{id}/backlog` | Backlog with ordering |
 
-### 4.7 Comment Endpoints
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| POST | `/tickets/:id/comments` | Add comment |
-| GET | `/tickets/:id/comments` | List comments |
-| PUT | `/comments/:id` | Edit own comment |
-| DELETE | `/comments/:id` | Delete own comment |
-
-### 4.8 Standard Response Envelope
+### 3.6 Standard Response Envelope
 ```json
 {
-  "data": { ... },
+  "data": { "...resource..." },
   "meta": {
     "page": 1,
-    "pageSize": 25,
+    "page_size": 25,
     "total": 150,
-    "totalPages": 6
+    "total_pages": 6
   }
 }
 ```
 
-### 4.9 Error Response (RFC 7807)
+### 3.7 Error Response (RFC 7807 Problem Detail)
 ```json
 {
   "type": "https://api.yourdomain.com/errors/not-found",
@@ -206,127 +187,238 @@ https://api.yourdomain.com/api/v1/
   "status": 404,
   "detail": "Ticket PROJ-123 does not exist",
   "instance": "/api/v1/tickets/PROJ-123",
-  "correlationId": "abc-123-xyz"
+  "correlation_id": "abc-123-xyz"
+}
+```
+
+### 3.8 Pydantic 422 Validation Error (auto by FastAPI)
+```json
+{
+  "detail": [
+    {
+      "type": "missing",
+      "loc": ["body", "title"],
+      "msg": "Field required",
+      "input": {}
+    }
+  ]
 }
 ```
 
 ---
 
-## 5. Real-Time Architecture (Socket.IO)
+## 4. Real-Time Architecture (python-socketio)
 
-### 5.1 Namespace and Room Strategy
-```
-Namespace:  /board
-  Room:     board:{sprintId}      → broadcast ticket status updates
-  Room:     ticket:{ticketId}     → broadcast comment additions
-  
-Namespace:  /notifications
-  Room:     user:{userId}         → personal notifications
+### 4.1 Setup
+```python
+# app/websocket/server.py
+import socketio
+
+sio = socketio.AsyncServer(
+    async_mode="asgi",
+    client_manager=socketio.AsyncRedisManager("redis://redis:6379"),
+    cors_allowed_origins="*",
+)
+socket_app = socketio.ASGIApp(sio)
+
+# app/main.py
+app.mount("/ws", socket_app)  # WebSocket at wss://api.yourdomain.com/ws
 ```
 
-### 5.2 Events (Server → Client)
+### 4.2 Namespaces & Rooms
+| Namespace | Room | Purpose |
+|-----------|------|---------|
+| `/board` | `board:{sprint_id}` | Ticket status changes on Kanban board |
+| `/board` | `ticket:{ticket_id}` | Specific ticket updates |
+| `/notifications` | `user:{user_id}` | Personal notifications |
+
+### 4.3 Events (Server → Client)
 | Event | Payload | Trigger |
 |-------|---------|---------|
-| `ticket:updated` | `{ ticketId, changes }` | Any ticket field change |
-| `ticket:moved` | `{ ticketId, fromStatus, toStatus, movedBy }` | Status transition |
-| `ticket:assigned` | `{ ticketId, assigneeId }` | Assignment change |
-| `comment:added` | `{ ticketId, comment }` | New comment posted |
-| `sprint:started` | `{ sprintId }` | Sprint activated |
-| `sprint:completed` | `{ sprintId }` | Sprint completed |
-| `notification:new` | `{ notification }` | Any notification event |
+| `ticket:updated` | `{ ticket_id, changes, updated_by }` | Any field update |
+| `ticket:moved` | `{ ticket_id, from_status, to_status }` | Status transition |
+| `ticket:assigned` | `{ ticket_id, assignee_id }` | Assignee change |
+| `comment:added` | `{ ticket_id, comment }` | New comment |
+| `sprint:started` | `{ sprint_id, name }` | Sprint activated |
+| `sprint:completed` | `{ sprint_id }` | Sprint completed |
+| `notification:new` | `{ notification }` | Any notification |
 
-### 5.3 Events (Client → Server)
-| Event | Action |
-|-------|--------|
-| `board:join` | Subscribe to a sprint board room |
-| `board:leave` | Unsubscribe from sprint board room |
-| `ticket:join` | Subscribe to a ticket detail room |
+### 4.4 Emitting from FastAPI Endpoint
+```python
+# Inside a FastAPI route handler
+async def transition_ticket(ticket_id: UUID, body: TransitionRequest, sio=Depends(get_socketio)):
+    ticket = await ticket_service.transition(db, ticket_id, body.status)
+    await sio.emit(
+        "ticket:moved",
+        {"ticket_id": str(ticket_id), "from_status": old_status, "to_status": body.status},
+        room=f"board:{ticket.sprint_id}",
+        namespace="/board",
+    )
+    return ticket
+```
+
+---
+
+## 5. Security Architecture
+
+### 5.1 JWT Token Strategy
+```python
+# app/core/security.py
+
+ACCESS_TOKEN_EXPIRE_MINUTES = 15
+REFRESH_TOKEN_EXPIRE_DAYS   = 7
+ALGORITHM = "HS256"
+
+def create_access_token(data: dict) -> str:
+    payload = {**data, "exp": datetime.utcnow() + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)}
+    return jwt.encode(payload, settings.JWT_SECRET, algorithm=ALGORITHM)  # python-jose
+
+def verify_token(token: str) -> dict:
+    try:
+        return jwt.decode(token, settings.JWT_SECRET, algorithms=[ALGORITHM])
+    except JWTError:
+        raise HTTPException(status_code=401, detail="Invalid token")
+```
+
+### 5.2 FastAPI Auth Dependency Chain
+```python
+# app/dependencies/auth.py
+
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/v1/auth/login")
+
+async def get_current_user(
+    token: str = Depends(oauth2_scheme),
+    db: AsyncSession = Depends(get_db),
+) -> User:
+    payload = verify_token(token)
+    user = await user_repo.get(db, UUID(payload["sub"]))
+    if not user or not user.is_active:
+        raise HTTPException(status_code=401)
+    return user
+
+def require_project_role(*roles: ProjectRole):
+    """Curried dependency factory — usage: Depends(require_project_role(OWNER, ADMIN))"""
+    async def dependency(
+        project_id: UUID,
+        current_user: User = Depends(get_current_user),
+        db: AsyncSession = Depends(get_db),
+    ) -> ProjectMember:
+        member = await project_repo.get_member(db, project_id, current_user.id)
+        if not member or member.role not in roles:
+            raise HTTPException(status_code=403, detail="Insufficient project permissions")
+        return member
+    return dependency
+```
+
+### 5.3 RBAC Permission Matrix
+| Action | Admin | Project Owner | Team Member | Viewer |
+|--------|-------|---------------|-------------|--------|
+| Create Project | ✅ | ✅ | ❌ | ❌ |
+| Delete Project | ✅ | ✅ | ❌ | ❌ |
+| Manage Members | ✅ | ✅ | ❌ | ❌ |
+| Create Ticket | ✅ | ✅ | ✅ | ❌ |
+| Edit Any Ticket | ✅ | ✅ | ❌ | ❌ |
+| Edit Own Ticket | ✅ | ✅ | ✅ | ❌ |
+| Delete Ticket | ✅ | ✅ | ❌ | ❌ |
+| Create/Start Sprint | ✅ | ✅ | ❌ | ❌ |
+| View Everything | ✅ | ✅ | ✅ | ✅ |
 
 ---
 
 ## 6. State Management (Frontend)
 
-### 6.1 Redux Store (Global Persistent State)
+### 6.1 Redux Slices
 ```
 store/
-├── auth/       { user, accessToken, isAuthenticated }
-├── ui/         { theme, sidebarOpen, activeProject }
-└── notifications/ { unreadCount, items }
+├── authSlice        { user, access_token, is_authenticated, loading }
+├── uiSlice          { theme, sidebar_open, active_project_id }
+└── notificationSlice { unread_count, items[] }
 ```
 
-### 6.2 React Query (Server State)
-```
-Query Keys:
-  ['projects']                      → project list
-  ['projects', id]                  → single project
-  ['projects', id, 'tickets']       → project ticket list
-  ['tickets', id]                   → single ticket
-  ['sprints', id, 'board']          → sprint board data
-  ['projects', id, 'backlog']       → backlog tickets
-  ['tickets', id, 'comments']       → comments
-  ['tickets', id, 'history']        → activity log
-  ['sprints', id, 'stats']          → sprint stats
+### 6.2 React Query Key Registry
+```typescript
+const keys = {
+  projects:       () => ["projects"],
+  project:        (id: string) => ["projects", id],
+  tickets:        (projectId: string) => ["projects", projectId, "tickets"],
+  ticket:         (id: string) => ["tickets", id],
+  board:          (sprintId: string) => ["sprints", sprintId, "board"],
+  backlog:        (projectId: string) => ["projects", projectId, "backlog"],
+  ticketComments: (ticketId: string) => ["tickets", ticketId, "comments"],
+  ticketHistory:  (ticketId: string) => ["tickets", ticketId, "history"],
+  sprintStats:    (sprintId: string) => ["sprints", sprintId, "stats"],
+};
 ```
 
 ---
 
-## 7. Security Architecture
+## 7. Caching Strategy
 
-### 7.1 Token Strategy
-```
-Access Token:
-  - Type: JWT (RS256)
-  - TTL: 15 minutes
-  - Payload: { sub, email, role, projectRoles }
-  - Stored: Memory (JS variable) — NOT localStorage
-  
-Refresh Token:
-  - Type: Opaque random string (UUID v4)
-  - TTL: 7 days
-  - Stored: HttpOnly Cookie + Redis whitelist
-  - Rotation: New refresh token issued on every refresh
-```
-
-### 7.2 RBAC Permission Matrix
-| Resource | Admin | Project Owner | Team Member | Viewer |
-|----------|-------|---------------|-------------|--------|
-| Create Project | ✅ | ✅ | ❌ | ❌ |
-| Delete Project | ✅ | ✅ | ❌ | ❌ |
-| Manage Project Members | ✅ | ✅ | ❌ | ❌ |
-| Create Ticket | ✅ | ✅ | ✅ | ❌ |
-| Edit Any Ticket | ✅ | ✅ | ❌ | ❌ |
-| Edit Assigned Ticket | ✅ | ✅ | ✅ | ❌ |
-| Delete Ticket | ✅ | ✅ | ❌ | ❌ |
-| Create Sprint | ✅ | ✅ | ❌ | ❌ |
-| Start/Complete Sprint | ✅ | ✅ | ❌ | ❌ |
-| View All | ✅ | ✅ | ✅ | ✅ |
+| Data | Key Pattern | TTL | Invalidated When |
+|------|-------------|-----|------------------|
+| Sprint Board | `board:{sprint_id}` | 5 min | Ticket updated / moved |
+| Active Sprint | `project:{id}:active_sprint` | 10 min | Sprint started / completed |
+| User Profile | `user:{id}:profile` | 30 min | Profile updated |
+| Project Members | `project:{id}:members` | 15 min | Member added / removed |
+| Refresh Token | `rt:{user_id}:{jti}` | 7 days | Logout / token rotation |
+| Rate Limit | `rl:{ip}:{endpoint}` | 60 sec | Auto-expire |
 
 ---
 
-## 8. Caching Strategy
+## 8. Database Connection Management
 
-| Data | Cache Key | TTL | Invalidation Trigger |
-|------|-----------|-----|----------------------|
-| Sprint Board | `board:{sprintId}` | 5 min | Any ticket update in sprint |
-| Active Sprint | `project:{id}:activeSprint` | 10 min | Sprint start/complete |
-| User Profile | `user:{id}:profile` | 30 min | Profile update |
-| Project Members | `project:{id}:members` | 15 min | Member add/remove |
-| Refresh Tokens | `rt:{userId}:{jti}` | 7 days | Logout / rotation |
+```python
+# app/core/database.py
+from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
+from typing import AsyncGenerator
+
+engine = create_async_engine(
+    settings.DATABASE_URL,   # "postgresql+asyncpg://user:pass@host/db"
+    pool_size=10,
+    max_overflow=10,
+    pool_pre_ping=True,
+    echo=False,
+)
+
+AsyncSessionLocal = async_sessionmaker(
+    engine,
+    class_=AsyncSession,
+    expire_on_commit=False,
+)
+
+async def get_db() -> AsyncGenerator[AsyncSession, None]:
+    async with AsyncSessionLocal() as session:
+        try:
+            yield session
+            await session.commit()
+        except Exception:
+            await session.rollback()
+            raise
+```
 
 ---
 
-## 9. Database Connection Pooling
+## 9. Testing Strategy
 
-```
-Prisma Connection Pool:
-  - Min connections: 5
-  - Max connections: 20
-  - Idle timeout: 60s
-  - Connection timeout: 10s
+| Level | Framework | Coverage Target |
+|-------|-----------|----------------|
+| Unit (services/utils) | pytest | 80% |
+| Integration (API routes) | pytest + httpx AsyncClient | 70% |
+| DB Integration | pytest + testcontainers (PostgreSQL) | 60% |
+| Frontend Components | Vitest + React Testing Library | 70% |
+| E2E | Playwright | Critical user flows |
 
-Redis:
-  - Max connections: 50
-  - Retry strategy: exponential backoff (max 5 retries)
+```python
+# tests/conftest.py — async test fixtures
+@pytest_asyncio.fixture
+async def async_client(app) -> AsyncGenerator:
+    async with AsyncClient(app=app, base_url="http://test") as client:
+        yield client
+
+@pytest_asyncio.fixture
+async def auth_headers(async_client, test_user) -> dict:
+    resp = await async_client.post("/api/v1/auth/login", json={...})
+    return {"Authorization": f"Bearer {resp.json()['access_token']}"}
 ```
 
 ---
@@ -334,16 +426,18 @@ Redis:
 ## 10. Non-Functional Architecture Decisions
 
 ### 10.1 Scalability
-- NestJS app is **stateless** — all shared state (sessions, rate counters) is in Redis
-- Horizontal scaling via ECS desired count; ALB distributes traffic
-- Socket.IO uses Redis Adapter so multiple API instances share room membership
+- FastAPI processes are **fully stateless** — shared state only in Redis
+- python-socketio `AsyncRedisManager` means any ECS task can publish to any room
+- ECS desired-count auto-scaling on CPU + ALB request count
 
-### 10.2 Reliability
-- RDS Multi-AZ failover (≤30s RTO on DB failure)
-- ECS tasks auto-replace on health check failure
-- Dead Letter Queue for failed notification emails (SQS + SES)
+### 10.2 Async Design
+- Every DB operation: `await session.execute(select(...))`
+- Every Redis operation: `await redis.get(key)`
+- FastAPI never blocks the event loop
+- Production: `gunicorn -k uvicorn.workers.UvicornWorker -w 4` per ECS task
 
 ### 10.3 Performance
-- PostgreSQL query optimization: composite indexes on `(project_id, status)`, `(sprint_id, status)`, `(assignee_id, project_id)`
-- Full-text search: `tsvector` column on `tickets.title` and `tickets.description`
-- Pagination: cursor-based for board columns; offset-based for list views
+- PostgreSQL composite indexes: `(project_id, status)`, `(sprint_id, status)`, `(assignee_id, project_id)`
+- Full-text search: `tsvector` GIN index maintained by PostgreSQL trigger
+- N+1 prevention: `selectinload()` / `joinedload()` in SQLAlchemy queries
+- Pagination: offset-based for Phase 1; cursor-based option in Phase 3

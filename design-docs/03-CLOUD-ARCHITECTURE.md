@@ -1,292 +1,302 @@
 # Production Cloud Architecture
-## Jira-Like Project Management Application — AWS
+## Jira-Like Project Management Application
 
-**Version**: 1.0  
-**Date**: February 21, 2026  
-**Author**: Architecture Team  
-**Cloud Provider**: Amazon Web Services (AWS)  
-**Target Regions**: us-east-1 (Primary), us-west-2 (DR)
+**Version**: 2.0 | **Date**: February 21, 2026 | **Status**: Approved
+
+> Backend container: **Python 3.12 / FastAPI** on ECS Fargate.  
+> CI/CD pipeline: **Poetry** (dependency management), **pytest** (tests), **Docker** (python:3.12-slim image).
 
 ---
 
-## 1. Architecture Overview
-
-The production environment is a **multi-AZ, auto-scaling cloud-native deployment** on AWS using managed services wherever possible to minimise operational overhead.
+## 1. AWS Architecture Overview
 
 ```
-┌─────────────────────────────────────────────────────────────────────────────────┐
-│                              INTERNET                                           │
-└──────────────────────────────────┬─────────────────────────────────────────────┘
-                                   │
-                    ┌──────────────▼──────────────┐
-                    │       Route 53 (DNS)         │
-                    │   yourdomain.com             │
-                    │   api.yourdomain.com         │
-                    └──────────────┬──────────────┘
-                                   │
-              ┌────────────────────┼─────────────────────┐
-              │                    │                      │
-   ┌──────────▼──────────┐         │            ┌────────▼────────────┐
-   │  CloudFront CDN     │         │            │  AWS WAF             │
-   │  (Static Assets)    │         │            │  (Web App Firewall)  │
-   │  S3 origin          │         │            └────────┬────────────┘
-   │  yourdomain.com     │         │                     │
-   └─────────────────────┘         │            ┌────────▼────────────┐
-                                   │            │  ALB                 │
-                                   │            │  (App Load Balancer) │
-                                   │            └────────┬────────────┘
-                                   │                     │
-┌──────────────────────────────────┼─────────────────────┼────────────────────────┐
-│  VPC  10.0.0.0/16                │                     │                        │
-│                                  │                     │                        │
-│  ┌──────────────────────────┐    │    ┌────────────────▼──────────────────────┐ │
-│  │  Public Subnets           │    │    │  Private Subnets (App Tier)           │ │
-│  │  10.0.1.0/24 (AZ-a)      │    │    │  10.0.10.0/24 (AZ-a)                 │ │
-│  │  10.0.2.0/24 (AZ-b)      │    │    │  10.0.11.0/24 (AZ-b)                 │ │
-│  │                           │    │    │                                        │ │
-│  │  ┌─────────────────────┐ │    │    │  ┌──────────────────────────────────┐ │ │
-│  │  │  NAT Gateway (AZ-a) │ │    │    │  │  ECS Fargate Cluster             │ │ │
-│  │  └─────────────────────┘ │    │    │  │                                  │ │ │
-│  │  ┌─────────────────────┐ │    │    │  │  ┌────────────┐ ┌────────────┐  │ │ │
-│  │  │  NAT Gateway (AZ-b) │ │    │    │  │  │  API Task  │ │  API Task  │  │ │ │
-│  │  └─────────────────────┘ │    │    │  │  │  (AZ-a)    │ │  (AZ-b)    │  │ │ │
-│  └──────────────────────────┘    │    │  │  │  NestJS    │ │  NestJS    │  │ │ │
-│                                  │    │  │  │  1vCPU     │ │  1vCPU     │  │ │ │
-│                                  │    │  │  │  2GB RAM   │ │  2GB RAM   │  │ │ │
-│                                  │    │  │  └────────────┘ └────────────┘  │ │ │
-│                                  │    │  │                                  │ │ │
-│                                  │    │  │  Auto Scaling: 2 min, 10 max    │ │ │
-│                                  │    │  │  Scale-out: CPU > 70% (5m avg)  │ │ │
-│                                  │    │  │  Scale-in:  CPU < 30% (15m avg) │ │ │
-│                                  │    │  └──────────────────────────────────┘ │ │
-│                                  │    └────────────────────────────────────────┘ │
-│                                  │                                                │
-│  ┌─────────────────────────────────────────────────────────────────────────────┐  │
-│  │  Private Subnets (Data Tier)                                                │  │
-│  │  10.0.20.0/24 (AZ-a)   10.0.21.0/24 (AZ-b)                                │  │
-│  │                                                                             │  │
-│  │  ┌──────────────────────────┐     ┌──────────────────────────────────────┐ │  │
-│  │  │  RDS PostgreSQL 15        │     │  ElastiCache Redis 7                 │ │  │
-│  │  │                           │     │                                      │ │  │
-│  │  │  Primary (AZ-a)           │     │  Primary (AZ-a)                      │ │  │
-│  │  │  db.r6g.large             │     │  cache.r6g.large                     │ │  │
-│  │  │  ↕ synchronous replictn   │     │  ↕ async replication                 │ │  │
-│  │  │  Read Replica (AZ-b)      │     │  Replica (AZ-b)                      │ │  │
-│  │  │  db.r6g.large             │     │                                      │ │  │
-│  │  │                           │     │  Cluster Mode: Enabled               │ │  │
-│  │  │  Storage: 100GB gp3       │     │  Encryption: At-rest + in-transit    │ │  │
-│  │  │  IOPS: 3000               │     │                                      │ │  │
-│  │  │  Encrypted: KMS           │     │  cache.r6g.large: 13.07 GB RAM       │ │  │
-│  │  │  Backup: 7-day retention  │     └──────────────────────────────────────┘ │  │
-│  │  └──────────────────────────┘                                               │  │
-│  └─────────────────────────────────────────────────────────────────────────────┘  │
-│                                                                                    │
-└────────────────────────────────────────────────────────────────────────────────────┘
-
-External AWS Services (outside VPC):
-┌─────────────┐  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐  ┌───────────────────┐
-│   AWS S3    │  │   AWS SES   │  │  CloudWatch │  │   AWS SQS   │  │ AWS SecretsManager│
-│(Attachments)│  │   (Email)   │  │(Logs+Metrics│  │  (DLQ)      │  │  (Credentials)    │
-└─────────────┘  └─────────────┘  └─────────────┘  └─────────────┘  └───────────────────┘
+┌────────────────────────────────────────────────────────────────────────────────┐
+│                              AWS CLOUD                                         │
+│                                                                                │
+│  ┌──────────────────────────────────────────────────────────────────────────┐  │
+│  │                       us-east-1 (Primary Region)                        │  │
+│  │                                                                          │  │
+│  │  ┌──────────────────────────────────────────────────────────────────┐   │  │
+│  │  │                          VPC (10.0.0.0/16)                       │   │  │
+│  │  │                                                                  │   │  │
+│  │  │  ┌─────────────────────────────────────────────────────────┐    │   │  │
+│  │  │  │                   Public Subnets                        │    │   │  │
+│  │  │  │  ┌────────────────────────┐  ┌────────────────────────┐ │    │   │  │
+│  │  │  │  │  10.0.1.0/24 (AZ-1a)  │  │  10.0.2.0/24 (AZ-1b)  │ │    │   │  │
+│  │  │  │  │  - ALB nodes           │  │  - ALB nodes           │ │    │   │  │
+│  │  │  │  │  - NAT Gateway         │  │  - NAT Gateway         │ │    │   │  │
+│  │  │  │  └────────────────────────┘  └────────────────────────┘ │    │   │  │
+│  │  │  └─────────────────────────────────────────────────────────┘    │   │  │
+│  │  │                                                                  │   │  │
+│  │  │  ┌─────────────────────────────────────────────────────────┐    │   │  │
+│  │  │  │                   Private Subnets                       │    │   │  │
+│  │  │  │  ┌────────────────────────┐  ┌────────────────────────┐ │    │   │  │
+│  │  │  │  │ 10.0.10.0/24 (AZ-1a)  │  │ 10.0.11.0/24 (AZ-1b)  │ │    │   │  │
+│  │  │  │  │                        │  │                        │ │    │   │  │
+│  │  │  │  │  ECS Fargate Tasks     │  │  ECS Fargate Tasks     │ │    │   │  │
+│  │  │  │  │ ┌──────────────────┐   │  │ ┌──────────────────┐  │ │    │   │  │
+│  │  │  │  │ │  FastAPI API     │   │  │ │  FastAPI API     │  │ │    │   │  │
+│  │  │  │  │ │  (Python 3.12)   │   │  │ │  (Python 3.12)   │  │ │    │   │  │
+│  │  │  │  │ │  Uvicorn ASGI    │   │  │ │  Uvicorn ASGI    │  │ │    │   │  │
+│  │  │  │  │ │  Port: 8000      │   │  │ │  Port: 8000      │  │ │    │   │  │
+│  │  │  │  │ │  CPU: 512        │   │  │ │  CPU: 512        │  │ │    │   │  │
+│  │  │  │  │ │  Memory: 1024MB  │   │  │ │  Memory: 1024MB  │  │ │    │   │  │
+│  │  │  │  │ └──────────────────┘   │  │ └──────────────────┘  │ │    │   │  │
+│  │  │  │  └────────────────────────┘  └────────────────────────┘ │    │   │  │
+│  │  │  └─────────────────────────────────────────────────────────┘    │   │  │
+│  │  │                                                                  │   │  │
+│  │  │  ┌─────────────────────────────────────────────────────────┐    │   │  │
+│  │  │  │                   Data Subnets                          │    │   │  │
+│  │  │  │  ┌────────────────────────┐  ┌────────────────────────┐ │    │   │  │
+│  │  │  │  │ 10.0.20.0/24 (AZ-1a)  │  │ 10.0.21.0/24 (AZ-1b)  │ │    │   │  │
+│  │  │  │  │  RDS Primary           │  │  RDS Standby (Multi-AZ)│ │    │   │  │
+│  │  │  │  │  PostgreSQL 15         │  │  ElastiCache Redis      │ │    │   │  │
+│  │  │  │  └────────────────────────┘  └────────────────────────┘ │    │   │  │
+│  │  │  └─────────────────────────────────────────────────────────┘    │   │  │
+│  │  └──────────────────────────────────────────────────────────────────┘   │  │
+│  │                                                                          │  │
+│  │  ┌───────────────────────────────────────────────────────────────────┐  │  │
+│  │  │                  Global / Edge Resources                          │  │  │
+│  │  │  CloudFront (SPA + API Cache)  │  S3 (Frontend + Attachments)    │  │  │
+│  │  │  Route 53 (DNS)                │  ACM (SSL/TLS wildcard cert)    │  │  │
+│  │  │  WAF (Web Application Firewall)│  SES (Email)                    │  │  │
+│  │  │  Secrets Manager               │  ECR (Container Registry)       │  │  │
+│  │  └───────────────────────────────────────────────────────────────────┘  │  │
+│  └──────────────────────────────────────────────────────────────────────────┘  │
+│                                                                                │
+│  ┌──────────────────────────────────────────────────────────────────────────┐  │
+│  │               us-west-2 (DR Region — Active-Passive)                    │  │
+│  │  RDS Read Replica (cross-region)  │  S3 Cross-Region Replication        │  │
+│  └──────────────────────────────────────────────────────────────────────────┘  │
+└────────────────────────────────────────────────────────────────────────────────┘
 ```
 
 ---
 
-## 2. AWS Services Inventory
+## 2. Service Configuration
 
-### 2.1 Compute
-| Service | Configuration | Purpose |
-|---------|--------------|---------|
-| **ECS Fargate** | 1 vCPU / 2GB RAM per task | Run NestJS API containers |
-| **ECR** | Private registry | Store Docker images |
-| **Auto Scaling** | Min 2, Max 10 tasks | Scale API tier |
+### 2.1 ECS Fargate — FastAPI Application
+| Parameter | Phase 1 | Phase 3+ |
+|-----------|---------|---------|
+| Task CPU | 512 (0.5 vCPU) | 1024 (1 vCPU) |
+| Task Memory | 1024 MB | 2048 MB |
+| Desired Count | 2 | 4 |
+| Min Scaling | 2 | 2 |
+| Max Scaling | 8 | 20 |
+| Container Image | `python:3.12-slim` (ECR) | same |
+| Command | `gunicorn -k uvicorn.workers.UvicornWorker -w 4 app.main:app` | same |
+| Port | 8000 | 8000 |
+| Health Check | `GET /health` | same |
 
-### 2.2 Networking
-| Service | Configuration | Purpose |
-|---------|--------------|---------|
-| **VPC** | 10.0.0.0/16, 3-tier subnet design | Network isolation |
-| **ALB** | HTTPS listener (ACM cert), HTTP → HTTPS redirect | Load balance API traffic |
-| **CloudFront** | S3 origin, HTTPS, React SPA assets | CDN for static frontend |
-| **Route 53** | A-records, health checks | DNS + failover routing |
-| **WAF** | OWASP Top 10 rules, rate limiting | Edge security |
-| **NAT Gateway** | One per AZ | Outbound internet for private subnets |
+**Environment Variables** (stored in AWS Secrets Manager, injected at task launch):
+```
+DATABASE_URL=postgresql+asyncpg://user:pass@rds-host:5432/dbname
+REDIS_URL=redis://elasticache-host:6379
+JWT_SECRET=<256-bit secret from Secrets Manager>
+AWS_S3_BUCKET=jira-app-attachments
+AWS_SES_FROM_EMAIL=noreply@yourdomain.com
+ENVIRONMENT=production
+LOG_LEVEL=INFO
+```
 
-### 2.3 Data
-| Service | Configuration | Purpose |
-|---------|--------------|---------|
-| **RDS PostgreSQL 15** | db.r6g.large, Multi-AZ, encrypted | Primary database |
-| **RDS Read Replica** | db.r6g.large, cross-AZ | Read-scaling for reports |
-| **ElastiCache Redis 7** | cache.r6g.large, cluster mode, Multi-AZ | Caching + sessions |
-| **S3** | Versioned, encrypted (SSE-S3) | File attachments, frontend assets |
+### 2.2 ECS Fargate — Alembic Migration Task (One-shot)
+Run as a separate ECS task on each deployment before rolling ECS service update:
+```
+Command: alembic upgrade head
+```
 
-### 2.4 Security
-| Service | Configuration | Purpose |
-|---------|--------------|---------|
-| **ACM** | Wildcard cert `*.yourdomain.com` | TLS termination at ALB |
-| **KMS** | Customer-managed key | RDS encryption |
-| **Secrets Manager** | Auto-rotation 30 days | DB credentials, JWT secrets |
-| **IAM** | Least-privilege task roles | ECS task permissions |
-| **Security Groups** | Layered inbound rules | Network-level access control |
-| **AWS WAF** | Managed rule groups | Web layer protection |
+### 2.3 AWS RDS — PostgreSQL 15
+| Parameter | Phase 1 | Phase 3+ |
+|-----------|---------|---------|
+| Instance Class | `db.t4g.medium` | `db.r7g.large` |
+| Storage | 100 GB gp3 | 500 GB gp3 |
+| Multi-AZ | Yes | Yes |
+| Read Replicas | 0 | 1 (same region) |
+| Backup Retention | 30 days | 30 days |
+| Parameter Group | Tuned for connection pooling | same |
 
-### 2.5 Observability
-| Service | Configuration | Purpose |
-|---------|--------------|---------|
-| **CloudWatch Logs** | 90-day retention | Application logs |
-| **CloudWatch Metrics** | Custom + built-in | Resource utilisation |
-| **CloudWatch Alarms** | SNS alerts | Threshold breaches |
-| **CloudWatch Dashboard** | API latency, error rate, DB connections | Operational visibility |
-| **AWS X-Ray** | Sampling 5% | Distributed tracing |
+### 2.4 AWS ElastiCache — Redis 7
+| Parameter | Value |
+|-----------|-------|
+| Engine | Redis 7.x |
+| Node Type | `cache.t4g.small` |
+| Cluster Mode | Disabled (single shard) |
+| Multi-AZ with Failover | Enabled |
+| Auth Token | Enabled (stored in Secrets Manager) |
 
-### 2.6 Delivery
-| Service | Configuration | Purpose |
-|---------|--------------|---------|
-| **GitHub Actions** | Push-to-deploy pipeline | CI/CD |
-| **ECR** | Image scanning on push | Container vulnerability detection |
-| **CodeDeploy** | Rolling update strategy ECS | Zero-downtime deployments |
-
-### 2.7 Messaging
-| Service | Configuration | Purpose |
-|---------|--------------|---------|
-| **SQS** | Standard queue, DLQ | Async notification processing |
-| **SES** | Verified domain, DKIM | Transactional email |
-| **SNS** | Alert topics | Ops alerting |
+### 2.5 AWS CloudFront + S3 (Frontend SPA)
+| Parameter | Value |
+|-----------|-------|
+| Origin | S3 bucket (OAC policy) |
+| Price Class | PriceClass_100 (US, EU) |
+| Cache Behavior | `/` → SPA (24h TTL); `/api/*` → no cache (forward to ALB) |
+| WAF | OWASP Top 10 managed rule set |
+| Custom Error | 403/404 → `/index.html` (SPA routing) |
 
 ---
 
-## 3. Security Group Rules
+## 3. Security Groups
 
-### 3.1 ALB Security Group
+| SG Name | Inbound Rules | Outbound |
+|---------|--------------|----------|
+| `sg-alb` | 443 from 0.0.0.0/0, 80 from 0.0.0.0/0 | All to `sg-api` |
+| `sg-api` | 8000 from `sg-alb` only | All to `sg-rds`, `sg-redis`, HTTPS to S3/SES/ECR |
+| `sg-rds` | 5432 from `sg-api` only | None |
+| `sg-redis` | 6379 from `sg-api` only | None |
+
+---
+
+## 4. CI/CD Pipeline (GitHub Actions)
+
 ```
-Inbound:  443 (HTTPS) from 0.0.0.0/0
-          80 (HTTP)   from 0.0.0.0/0  ← redirects to 443
-Outbound: All to ECS SG
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                        GitHub Actions — CI/CD Pipeline                      │
+│                                                                             │
+│  Trigger: Push to main branch                                               │
+│                                                                             │
+│  ┌────────────┐  ┌────────────┐  ┌────────────┐  ┌────────────┐          │
+│  │  Stage 1   │  │  Stage 2   │  │  Stage 3   │  │  Stage 4   │          │
+│  │   Lint &   │→ │   Test     │→ │   Build &  │→ │  Deploy    │          │
+│  │  Format    │  │            │  │   Push     │  │            │          │
+│  └────────────┘  └────────────┘  └────────────┘  └────────────┘          │
+│                                                                             │
+│  Stage 1 — Lint & Format (Backend + Frontend)                              │
+│  Backend:                                                                   │
+│    - poetry run ruff check app/                                             │
+│    - poetry run ruff format --check app/                                    │
+│    - poetry run mypy app/                                                   │
+│  Frontend:                                                                  │
+│    - npm run lint (ESLint + TypeScript compile check)                       │
+│                                                                             │
+│  Stage 2 — Test (Backend + Frontend)                                       │
+│  Backend:                                                                   │
+│    - poetry install --no-dev (ci cache)                                     │
+│    - docker run postgres:15 (testcontainer via pytest-docker)               │
+│    - poetry run pytest --cov=app --cov-report=xml -q                        │
+│    - coverage gate: must be ≥ 70%                                           │
+│  Frontend:                                                                  │
+│    - npm ci                                                                 │
+│    - npm run test:coverage (Vitest)                                         │
+│                                                                             │
+│  Stage 3 — Build & Push to ECR                                             │
+│    - docker build -t jira-api:${{ github.sha }}                             │
+│      (FROM python:3.12-slim, poetry install --only main)                    │
+│    - docker push $ECR_REGISTRY/jira-api:$SHA                               │
+│    - aws s3 sync frontend/dist/ s3://jira-frontend/ (SPA)                  │
+│    - aws cloudfront create-invalidation --paths "/*"                        │
+│                                                                             │
+│  Stage 4 — Deploy to ECS                                                   │
+│    - Run migration task: alembic upgrade head                               │
+│    - aws ecs update-service --force-new-deployment                          │
+│    - Wait for ECS rolling deployment to complete                            │
+│    - Health check: GET https://api.yourdomain.com/health                    │
+│                                                                             │
+└─────────────────────────────────────────────────────────────────────────────┘
 ```
 
-### 3.2 ECS Task Security Group
-```
-Inbound:  3000 (NestJS) from ALB SG only
-Outbound: 5432 (Postgres) to RDS SG
-          6379 (Redis)    to ElastiCache SG
-          443             to 0.0.0.0/0  (S3, SES, Secrets Manager via endpoints)
-```
+### 4.1 Dockerfile (Backend)
+```dockerfile
+FROM python:3.12-slim AS builder
+WORKDIR /app
+RUN pip install poetry
+COPY pyproject.toml poetry.lock ./
+RUN poetry export -f requirements.txt --without-hashes -o requirements.txt
 
-### 3.3 RDS Security Group
-```
-Inbound:  5432 from ECS SG only
-Outbound: None
-```
-
-### 3.4 ElastiCache Security Group
-```
-Inbound:  6379 from ECS SG only
-Outbound: None
+FROM python:3.12-slim
+WORKDIR /app
+COPY --from=builder /app/requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+COPY app/ ./app/
+COPY alembic/ ./alembic/
+COPY alembic.ini .
+EXPOSE 8000
+CMD ["gunicorn", "-k", "uvicorn.workers.UvicornWorker", "-w", "4", \
+     "--bind", "0.0.0.0:8000", "--timeout", "60", "app.main:app"]
 ```
 
 ---
 
-## 4. CI/CD Pipeline
+## 5. Monitoring & Alerting
 
-```
-Developer Push to main
-         │
-         ▼
-┌─────────────────┐
-│  GitHub Actions  │
-│                 │
-│ 1. Lint + Test  │
-│ 2. Docker Build │
-│ 3. Push to ECR  │
-│ 4. ECS Deploy   │
-│    (Rolling)    │
-└────────┬────────┘
-         │
-         ▼
-  ECS Rolling Update
-  (new task starts → health check passes → old task drains → terminates)
-         │
-         ▼
-  CloudWatch alarm monitors
-  error rate post-deploy
-  (auto-rollback trigger)
-```
+| Metric | Alert Threshold | Action |
+|--------|----------------|--------|
+| API Error Rate (5xx) | > 1% of requests | PagerDuty P2 |
+| API P95 Latency | > 500ms | PagerDuty P3 |
+| API P99 Latency | > 2000ms | PagerDuty P2 |
+| ECS CPU | > 80% for 5min | Auto-scale out |
+| ECS Memory | > 85% | PagerDuty P2 |
+| RDS CPU | > 70% for 5min | PagerDuty P2 |
+| RDS Connections | > 80% of max | PagerDuty P1 |
+| Redis Memory | > 80% | PagerDuty P2 |
+| Failed Deployments | Any failure | PagerDuty P1 + Slack |
+| pytest Coverage Drop | < 70% | Block PR merge |
 
-### 4.1 Pipeline Stages
-| Stage | Tool | Action |
-|-------|------|--------|
-| Code Quality | ESLint + Prettier | Fail on lint errors |
-| Unit Tests | Jest | Fail on test failures, coverage < 70% |
-| Integration Tests | Jest + testcontainers | Spin up Postgres + Redis |
-| Build | Docker Buildx | Multi-stage build, minimal image |
-| Scan | ECR Image Scan | Block on CRITICAL CVE |
-| Deploy Staging | GitHub Actions + ECS | Push on `develop` branch |
-| Deploy Production | GitHub Actions + ECS | Push on `main` branch (manual approval) |
-| Smoke Test | Playwright | 5 key user flows post-deploy |
-
----
-
-## 5. Environment Strategy
-
-| Environment | Infrastructure | Branch | Auto-deploy |
-|-------------|--------------|--------|-------------|
-| **Development** | Docker Compose (local) | feature/* | No |
-| **Staging** | ECS (single AZ, smaller instances) | develop | Yes |
-| **Production** | ECS (Multi-AZ, full spec) | main | Manual approval |
-
-### 5.1 Environment Variables (via Secrets Manager)
-```
-DATABASE_URL        → Injected at ECS task start from Secrets Manager
-REDIS_URL           → Injected at ECS task start
-JWT_SECRET          → Rotated every 30 days
-JWT_REFRESH_SECRET  → Rotated every 30 days
-AWS_REGION          → Built-in ECS metadata
-S3_BUCKET           → Task Definition env var (non-secret)
-SES_FROM_EMAIL      → Task Definition env var (non-secret)
-```
+### 5.1 ECS Custom Metrics (via structlog + CloudWatch Logs Metric Filter)
+Python FastAPI app emits structured JSON logs; CloudWatch Metric Filters extract:
+- `request_duration_ms` — P50, P95, P99 per endpoint
+- `db_query_duration_ms` — slow query detection
+- `cache_hit_rate` — board state / user profile caches
 
 ---
 
 ## 6. Disaster Recovery
 
-| Scenario | Recovery Mechanism | RTO | RPO |
-|----------|--------------------|-----|-----|
-| ECS Task failure | Auto-replacement by ECS | < 60s | 0 |
-| AZ failure | Multi-AZ auto-failover (RDS + ECS) | < 5 min | 0 |
-| RDS instance failure | Multi-AZ standby promotion | < 30s | 0 |
-| Region failure | Manual Route 53 failover to us-west-2 | < 1 hr | 24 hr |
-| Accidental data deletion | RDS point-in-time restore | < 30 min | 5 min |
-| S3 data loss | S3 versioning restore | < 15 min | 0 |
+| Scenario | RTO | RPO | Recovery Action |
+|----------|-----|-----|-----------------|
+| ECS task crash | < 1 min | 0 | ECS auto-restarts task; ALB health check fails old |
+| AZ failure | < 5 min | 0 | ALB routes to healthy AZ; ECS tasks in other AZ |
+| RDS failover | < 2 min | 0 | Multi-AZ automatic promotion |
+| Region failure | < 1 hr | 24 hr | Promote RDS cross-region replica; update Route 53 |
+| Data corruption | < 2 hr | 24 hr | Restore from most recent RDS automated snapshot |
 
 ---
 
-## 7. Cost Estimation (Production — Monthly)
+## 7. Cost Estimate (Phase 1 — us-east-1)
 
-| Service | Configuration | Est. Monthly Cost (USD) |
-|---------|--------------|-------------------------|
-| ECS Fargate | 2 tasks × 1vCPU × 2GB | ~$60 |
-| RDS db.r6g.large Multi-AZ | 100GB storage | ~$320 |
-| ElastiCache cache.r6g.large | Multi-AZ | ~$180 |
-| ALB | ~1M requests/mo | ~$20 |
-| CloudFront | ~10GB transfer | ~$5 |
-| S3 | 50GB storage + requests | ~$5 |
-| NAT Gateway | 2 × ~10GB | ~$40 |
-| Route 53 | Hosted zone + queries | ~$5 |
-| CloudWatch | Logs + metrics | ~$20 |
-| SES | 10,000 emails/mo | ~$1 |
-| Secrets Manager | 5 secrets + rotations | ~$5 |
-| **Total Estimate** | | **~$661/month** |
-
-> Staging environment: ~$150/month (single AZ, smaller instances)
+| Service | Config | Est. Monthly |
+|---------|--------|-------------|
+| ECS Fargate (API) | 2 tasks × 0.5 vCPU × 1GB, 730h | ~$35 |
+| RDS PostgreSQL | db.t4g.medium, Multi-AZ, 100GB gp3 | ~$110 |
+| ElastiCache Redis | cache.t4g.small, Multi-AZ | ~$30 |
+| ALB | 2 LCUs average | ~$20 |
+| CloudFront + S3 | 5 GB transfer | ~$5 |
+| ECR | 2 images stored | ~$1 |
+| Route 53 | 1 hosted zone | ~$1 |
+| Secrets Manager | 5 secrets | ~$2 |
+| AWS SES | < 10,000 emails | ~$1 |
+| CloudWatch | Metrics + Logs | ~$10 |
+| **TOTAL** | | **~$215/month** |
 
 ---
 
-## 8. Scaling Targets
+## 8. IAM Roles
 
-| Metric | Phase 1 Target | Phase 3 Target |
-|--------|---------------|----------------|
-| Concurrent Users | 500 | 5,000 |
-| API Requests/sec | 100 | 1,000 |
-| DB Connections | 50 | 200 |
-| ECS Tasks | 2–4 | 5–10 |
-| RDS Instance | db.r6g.large | db.r6g.xlarge |
-| Redis | cache.r6g.large | cache.r6g.xlarge |
+### 8.1 ECS Task Role (`jira-api-task-role`)
+```json
+{
+  "permissions": [
+    "s3:PutObject", "s3:GetObject", "s3:DeleteObject",
+    "ses:SendEmail",
+    "secretsmanager:GetSecretValue",
+    "xray:PutTraceSegments",
+    "cloudwatch:PutMetricData",
+    "logs:CreateLogStream", "logs:PutLogEvents"
+  ]
+}
+```
+
+### 8.2 GitHub Actions Role (`jira-cicd-role`)
+```json
+{
+  "permissions": [
+    "ecr:GetAuthorizationToken", "ecr:BatchCheckLayerAvailability",
+    "ecr:PutImage", "ecr:InitiateLayerUpload", "ecr:UploadLayerPart", "ecr:CompleteLayerUpload",
+    "ecs:RegisterTaskDefinition", "ecs:UpdateService", "ecs:DescribeServices",
+    "ecs:RunTask", "ecs:StopTask",
+    "s3:PutObject", "s3:ListBucket",
+    "cloudfront:CreateInvalidation",
+    "iam:PassRole"
+  ]
+}
+```
