@@ -17,6 +17,7 @@
 | 03 | [Production Cloud Architecture](./03-CLOUD-ARCHITECTURE.md) | AWS infrastructure, security groups, CI/CD pipeline, DR strategy, cost estimate |
 | 04 | [Low-Level Design](./04-LOW-LEVEL-DESIGN.md) | SQLAlchemy schema, DB indexes, FastAPI router internals, Pydantic schemas, Redis key design |
 | 05 | [Phase 1 Mermaid Diagrams](./05-PHASE1-MERMAID-DIAGRAMS.md) | 12 Mermaid diagrams covering all key flows for MVP delivery |
+| 06 | [API Contract — MVP1.0](./06-API-CONTRACT.md) | Complete REST API contract for MVP1.0 — auth, projects, tickets. Single source of truth for backend and frontend. |
 
 ---
 
