@@ -1,0 +1,17 @@
+"""Shared Pydantic schemas used across multiple modules."""
+from typing import Generic, TypeVar
+from pydantic import BaseModel
+
+T = TypeVar("T")
+
+
+class PaginatedResponse(BaseModel, Generic[T]):
+    items: list[T]
+    total: int
+    skip: int
+    limit: int
+
+
+class ErrorResponse(BaseModel):
+    detail: str
+    code: str
