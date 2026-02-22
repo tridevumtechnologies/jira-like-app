@@ -114,15 +114,25 @@ No authentication required.
 {
   "full_name": "Jane Doe",
   "email": "jane@example.com",
-  "password": "MinLength8WithNumber1"
+  "password": "MinLength8WithNumber1",
+  "address": "123 Main St, Springfield, USA",
+  "security_question": {
+    "question": "What was the name of your first pet?",
+    "answer": "Fluffy"
+  }
 }
 ```
 
 | Field | Type | Rules |
 |---|---|---|
-| `full_name` | string | 1–100 chars |
-| `email` | string | valid email format, unique |
-| `password` | string | min 8 chars |
+| `full_name` | string | required, 1–100 chars |
+| `email` | string | required, valid email format, unique |
+| `password` | string | required, min 8 chars |
+| `address` | string \| null | optional, max 255 chars |
+| `security_question.question` | string \| null | optional, max 255 chars |
+| `security_question.answer` | string \| null | optional, max 255 chars — stored hashed (bcrypt) |
+
+> `security_question` is an optional nested object. If provided, both `question` and `answer` must be present. The answer is stored hashed and is never returned in any response.
 
 **Response `201 Created`**
 ```json
@@ -228,9 +238,12 @@ GET /users/me
   "id": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
   "full_name": "Jane Doe",
   "email": "jane@example.com",
+  "address": "123 Main St, Springfield, USA",
   "created_at": "2026-02-22T10:00:00Z"
 }
 ```
+
+> `security_question.answer` is **never** returned in any response. `security_question.question` (the prompt text) may be exposed in a future password-reset flow — out of scope for MVP1.0.
 
 ---
 
