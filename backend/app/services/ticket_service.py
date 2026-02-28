@@ -146,10 +146,10 @@ async def delete_ticket(
 ) -> None:
     ticket = await get_ticket(ticket_id, user_id, db)
 
-    # Only OWNER can delete
+    # Only OWNER or ADMIN can delete
     membership = await _assert_member(ticket.project_id, user_id, db)
-    if membership.role != ProjectMemberRole.OWNER:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only project OWNERs can delete tickets.")
+    if membership.role not in (ProjectMemberRole.OWNER, ProjectMemberRole.ADMIN):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only project OWNERs or ADMINs can delete tickets.")
 
     ticket.is_deleted = True
     await db.commit()
