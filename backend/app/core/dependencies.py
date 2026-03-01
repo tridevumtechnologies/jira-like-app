@@ -2,6 +2,8 @@
 FastAPI dependency: get_current_user
 Validates the Bearer JWT and returns the User ORM object.
 """
+import uuid as _uuid
+
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from jose import JWTError
@@ -27,11 +29,13 @@ async def get_current_user(
     )
     try:
         payload = decode_token(token)
-        user_id: str = payload.get("sub", "")
+        user_id_str: str = payload.get("sub", "")
         token_type: str = payload.get("type", "")
-        if not user_id or token_type != "access":
+        if not user_id_str or token_type != "access":
             raise credentials_exception
-    except JWTError:
+        # Convert to uuid.UUID so SQLAlchemy's Uuid bind-processor doesn't fail
+        user_id = _uuid.UUID(user_id_str)
+    except (JWTError, ValueError):
         raise credentials_exception
 
     result = await db.execute(select(User).where(User.id == user_id, User.is_active.is_(True)))

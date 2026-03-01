@@ -19,6 +19,7 @@ async def create_project(
     db: AsyncSession = Depends(get_db),
 ) -> ProjectResponse:
     project = await project_service.create_project(payload, current_user.id, db)
+    print("project created:", project)
     return ProjectResponse.model_validate(project)
 
 

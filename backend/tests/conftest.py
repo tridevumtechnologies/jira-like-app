@@ -1,62 +1,51 @@
 """
-Shared test fixtures.
+Shared test fixtures — no real database or Redis required.
 
-Requirements:
-  - Postgres test DB at TEST_DATABASE_URL (default: jira_test on localhost)
-  - Redis at TEST_REDIS_URL (default: redis://localhost:6379/1)
-  - Start infra: docker compose up -d db redis
-
-Isolation strategy
-  All tables are emptied (DELETE FROM) after every test via the autouse
-  `clean_db` fixture.  This avoids SQLAlchemy 2.0 bind/join-transaction
-  complexity while guaranteeing a clean slate for each test.
+Strategy
+  - SQLite in-memory  (via aiosqlite) replaces PostgreSQL
+  - fakeredis         replaces Redis
+  Tables are recreated once per session; all rows DELETEd after each test.
 """
-import asyncio
 import os
-from typing import AsyncGenerator
 
-import pytest
-import pytest_asyncio
-import sqlalchemy as sa
-from httpx import ASGITransport, AsyncClient
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+# ── Must be set BEFORE any app import so settings & redis module pick them up ──
+os.environ.setdefault("DATABASE_URL", "sqlite+aiosqlite:///:memory:")
+os.environ.setdefault("REDIS_URL", "redis://localhost:6379/0")   # unused but required by Settings
+os.environ["DEV_FAKE_REDIS"] = "1"
 
-from app.db.session import Base, get_db
-from app.main import app
+from typing import AsyncGenerator  # noqa: E402
+
+import pytest  # noqa: E402
+import pytest_asyncio  # noqa: E402
+import sqlalchemy as sa  # noqa: E402
+from httpx import ASGITransport, AsyncClient  # noqa: E402
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine  # noqa: E402
+
+from app.db.session import Base, get_db  # noqa: E402
+from app.main import app  # noqa: E402
 
 # ---------------------------------------------------------------------------
-# Test database & redis URLs  (override in CI via env vars)
+# In-memory SQLite engine (session-scoped)
 # ---------------------------------------------------------------------------
-TEST_DB_URL = os.getenv(
-    "TEST_DATABASE_URL",
-    "postgresql+asyncpg://jira_user:jira_pass@localhost:5432/jira_test",
+TEST_DB_URL = "sqlite+aiosqlite:///:memory:"
+
+test_engine = create_async_engine(
+    TEST_DB_URL,
+    echo=False,
+    connect_args={"check_same_thread": False},
 )
-TEST_REDIS_URL = os.getenv("TEST_REDIS_URL", "redis://localhost:6379/1")
-
-# Patch settings before any call that reads REDIS_URL
-import app.core.config as _cfg_module  # noqa: E402
-import app.db.redis as _redis_module  # noqa: E402
-
-_cfg_module.settings.REDIS_URL = TEST_REDIS_URL
-# Reset the cached Redis singleton so it reconnects to the test DB
-_redis_module._redis_client = None
-
-# ---------------------------------------------------------------------------
-# Engine (session-scoped — created once per test run)
-# ---------------------------------------------------------------------------
-test_engine = create_async_engine(TEST_DB_URL, echo=False, future=True)
 TestSessionLocal = async_sessionmaker(
     test_engine, class_=AsyncSession, expire_on_commit=False
 )
 
 
 # ---------------------------------------------------------------------------
-# Create / drop all tables once per session
+# Create / drop all tables once per test session
 # ---------------------------------------------------------------------------
 @pytest_asyncio.fixture(scope="session", autouse=True)
 async def create_test_tables() -> AsyncGenerator[None, None]:
     async with test_engine.begin() as conn:
-        await conn.run_sync(Base.metadata.drop_all)  # clean slate
+        await conn.run_sync(Base.metadata.drop_all)
         await conn.run_sync(Base.metadata.create_all)
     yield
     async with test_engine.begin() as conn:
@@ -65,21 +54,22 @@ async def create_test_tables() -> AsyncGenerator[None, None]:
 
 
 # ---------------------------------------------------------------------------
-# Flush Redis test DB once per session
+# Flush fakeredis once per session (no-op: fakeredis is already empty)
 # ---------------------------------------------------------------------------
 @pytest_asyncio.fixture(scope="session", autouse=True)
 async def flush_test_redis() -> AsyncGenerator[None, None]:
-    import redis.asyncio as aioredis
+    import app.db.redis as _redis_module  # noqa: E402
 
-    r = aioredis.from_url(TEST_REDIS_URL)
-    await r.flushdb()
+    _redis_module._redis_client = None   # force re-init as fakeredis
     yield
-    await r.flushdb()
-    await r.aclose()
+    if _redis_module._redis_client is not None:
+        await _redis_module._redis_client.flushdb()
+        await _redis_module._redis_client.aclose()
+    _redis_module._redis_client = None
 
 
 # ---------------------------------------------------------------------------
-# Per-test cleanup — delete all rows after each test (autouse)
+# Per-test cleanup — wipe all rows after each test
 # ---------------------------------------------------------------------------
 @pytest_asyncio.fixture(autouse=True)
 async def clean_db() -> AsyncGenerator[None, None]:
@@ -88,6 +78,11 @@ async def clean_db() -> AsyncGenerator[None, None]:
         for table in reversed(Base.metadata.sorted_tables):
             await session.execute(sa.delete(table))
         await session.commit()
+
+    # Also reset the fakeredis client so tokens don't leak between tests
+    import app.db.redis as _redis_module  # noqa: E402
+    if _redis_module._redis_client is not None:
+        await _redis_module._redis_client.flushdb()
 
 
 # ---------------------------------------------------------------------------
@@ -100,7 +95,7 @@ async def db() -> AsyncGenerator[AsyncSession, None]:
 
 
 # ---------------------------------------------------------------------------
-# Per-test HTTP client — overrides get_db with the test session
+# Per-test HTTP client — injects the SQLite test session into the app
 # ---------------------------------------------------------------------------
 @pytest_asyncio.fixture
 async def client(db: AsyncSession) -> AsyncGenerator[AsyncClient, None]:

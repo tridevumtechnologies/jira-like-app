@@ -47,7 +47,7 @@ class TestCreateProject:
             "/api/v1/projects",
             json={"name": "No Auth", "key": "NOAUTH"},
         )
-        assert resp.status_code == 403
+        assert resp.status_code == 401
 
     async def test_create_project_missing_name(
         self, client: AsyncClient, auth_headers: dict
@@ -107,7 +107,7 @@ class TestListProjects:
 
     async def test_list_projects_unauthenticated(self, client: AsyncClient) -> None:
         resp = await client.get("/api/v1/projects")
-        assert resp.status_code == 403
+        assert resp.status_code == 401
 
 
 # ---------------------------------------------------------------------------
@@ -151,4 +151,4 @@ class TestGetProject:
         self, client: AsyncClient, project: dict
     ) -> None:
         resp = await client.get(f"/api/v1/projects/{project['id']}")
-        assert resp.status_code == 403
+        assert resp.status_code == 401

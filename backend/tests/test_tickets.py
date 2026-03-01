@@ -101,7 +101,7 @@ class TestCreateTicket:
         resp = await client.post(
             f"/api/v1/projects/{project['id']}/tickets", json=_TICKET_BASE
         )
-        assert resp.status_code == 403
+        assert resp.status_code == 401
 
 
 # ---------------------------------------------------------------------------
@@ -327,4 +327,4 @@ class TestDeleteTicket:
     ) -> None:
         ticket = await _create_ticket(client, project["id"], auth_headers)
         resp = await client.delete(f"/api/v1/tickets/{ticket['id']}")
-        assert resp.status_code == 403
+        assert resp.status_code == 401

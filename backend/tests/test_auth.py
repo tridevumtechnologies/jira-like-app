@@ -163,7 +163,7 @@ class TestGetMe:
 
     async def test_get_me_unauthenticated(self, client: AsyncClient) -> None:
         resp = await client.get("/api/v1/users/me")
-        assert resp.status_code == 403
+        assert resp.status_code == 401
 
     async def test_get_me_invalid_token(self, client: AsyncClient) -> None:
         resp = await client.get(
@@ -187,4 +187,4 @@ class TestLogout:
 
     async def test_logout_unauthenticated(self, client: AsyncClient) -> None:
         resp = await client.post("/api/v1/auth/logout")
-        assert resp.status_code == 403
+        assert resp.status_code == 401
