@@ -34,7 +34,6 @@ async def register(
     response: Response,
     db: AsyncSession = Depends(get_db),
 ) -> TokenResponse:
-    print("Registering user with email:", payload.email)
     access_token, refresh_token, _ = await auth_service.register_user(payload, db)
     _set_refresh_cookie(response, refresh_token)
     return TokenResponse(access_token=access_token)

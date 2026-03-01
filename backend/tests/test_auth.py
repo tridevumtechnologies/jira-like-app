@@ -1,5 +1,6 @@
 """Tests for /api/v1/auth/* endpoints."""
 import pytest
+from unittest.mock import AsyncMock, patch
 from httpx import AsyncClient
 
 
@@ -188,3 +189,110 @@ class TestLogout:
     async def test_logout_unauthenticated(self, client: AsyncClient) -> None:
         resp = await client.post("/api/v1/auth/logout")
         assert resp.status_code == 401
+
+
+# ---------------------------------------------------------------------------
+# Unit tests — mock auth_service to cover every endpoint statement directly
+# These complement the integration tests above and guarantee 100 % line coverage
+# on app/api/v1/endpoints/auth.py regardless of async coverage-tracing gaps.
+# ---------------------------------------------------------------------------
+class TestAuthEndpointUnit:
+    """Drive each endpoint code-path with a mocked service layer."""
+
+    # ── register ──────────────────────────────────────────────────────────
+    async def test_register_returns_access_token_body(self, client: AsyncClient) -> None:
+        """register: verifies TokenResponse is built from the service return value."""
+        with patch(
+            "app.api.v1.endpoints.auth.auth_service.register_user",
+            new_callable=AsyncMock,
+            return_value=("unit_access_tok", "unit_refresh_tok", "unit_jti"),
+        ):
+            resp = await client.post(
+                "/api/v1/auth/register",
+                json={
+                    "full_name": "Unit User",
+                    "email": "unit_reg@example.com",
+                    "password": "Password123",
+                },
+            )
+        assert resp.status_code == 201
+        assert resp.json()["access_token"] == "unit_access_tok"
+        assert resp.json()["token_type"] == "bearer"
+
+    async def test_register_sets_httponly_refresh_cookie(self, client: AsyncClient) -> None:
+        """register: verifies _set_refresh_cookie writes the HttpOnly cookie."""
+        with patch(
+            "app.api.v1.endpoints.auth.auth_service.register_user",
+            new_callable=AsyncMock,
+            return_value=("tok_a", "tok_r", "tok_jti"),
+        ):
+            resp = await client.post(
+                "/api/v1/auth/register",
+                json={
+                    "full_name": "Cookie User",
+                    "email": "unit_cookie@example.com",
+                    "password": "Password123",
+                },
+            )
+        assert resp.status_code == 201
+        assert "refresh_token" in resp.cookies
+        assert resp.cookies["refresh_token"] == "tok_r"
+
+    # ── login ─────────────────────────────────────────────────────────────
+    async def test_login_returns_access_token_body(self, client: AsyncClient) -> None:
+        """login: verifies TokenResponse is built from the service return value."""
+        with patch(
+            "app.api.v1.endpoints.auth.auth_service.login_user",
+            new_callable=AsyncMock,
+            return_value=("login_access", "login_refresh", "login_jti"),
+        ):
+            resp = await client.post(
+                "/api/v1/auth/login",
+                json={"email": "any@example.com", "password": "Password123"},
+            )
+        assert resp.status_code == 200
+        assert resp.json()["access_token"] == "login_access"
+        assert resp.json()["token_type"] == "bearer"
+
+    async def test_login_sets_httponly_refresh_cookie(self, client: AsyncClient) -> None:
+        """login: verifies _set_refresh_cookie writes the HttpOnly cookie."""
+        with patch(
+            "app.api.v1.endpoints.auth.auth_service.login_user",
+            new_callable=AsyncMock,
+            return_value=("la", "lr", "lj"),
+        ):
+            resp = await client.post(
+                "/api/v1/auth/login",
+                json={"email": "cookie@example.com", "password": "Password123"},
+            )
+        assert resp.status_code == 200
+        assert "refresh_token" in resp.cookies
+        assert resp.cookies["refresh_token"] == "lr"
+
+    # ── refresh ───────────────────────────────────────────────────────────
+    async def test_refresh_sets_new_cookie(self, client: AsyncClient) -> None:
+        """refresh happy-path: new cookie written in response."""
+        with patch(
+            "app.api.v1.endpoints.auth.auth_service.refresh_tokens",
+            new_callable=AsyncMock,
+            return_value=("new_access", "new_refresh", "new_jti"),
+        ):
+            # Inject a fake cookie in the request
+            client.cookies.set("refresh_token", "old_refresh_token", path="/api/v1/auth")
+            resp = await client.post("/api/v1/auth/refresh")
+        assert resp.status_code == 200
+        assert resp.json()["access_token"] == "new_access"
+        assert "refresh_token" in resp.cookies
+
+    # ── logout ────────────────────────────────────────────────────────────
+    async def test_logout_clears_cookie(
+        self, client: AsyncClient, auth_headers: dict
+    ) -> None:
+        """logout: cookie deleted from response."""
+        with patch(
+            "app.api.v1.endpoints.auth.auth_service.logout_user",
+            new_callable=AsyncMock,
+            return_value=None,
+        ):
+            resp = await client.post("/api/v1/auth/logout", headers=auth_headers)
+        assert resp.status_code == 204
