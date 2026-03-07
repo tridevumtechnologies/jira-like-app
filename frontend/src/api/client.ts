@@ -51,7 +51,12 @@ apiClient.interceptors.response.use(
       _retried?: boolean
     }
 
-    if (error.response?.status !== 401 || originalRequest._retried) {
+    // Never attempt a refresh retry for the refresh endpoint itself —
+    // doing so creates an infinite loop (refresh fails → interceptor retries
+    // refresh → fails again → interceptor retries … ).
+    const isRefreshEndpoint = originalRequest.url?.includes('/auth/refresh')
+
+    if (error.response?.status !== 401 || originalRequest._retried || isRefreshEndpoint) {
       return Promise.reject(error)
     }
 
@@ -88,8 +93,9 @@ apiClient.interceptors.response.use(
       originalRequest.headers.Authorization = `Bearer ${newAccessToken}`
       return apiClient(originalRequest)
     } catch {
+      // Dispatch clearCredentials so ProtectedRoute / PublicLayout redirect
+      // the user via React Router — no hard page reload needed.
       store.dispatch(clearCredentials())
-      window.location.href = '/login'
       return Promise.reject(error)
     } finally {
       _isRefreshing = false

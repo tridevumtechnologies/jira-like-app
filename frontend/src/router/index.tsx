@@ -9,8 +9,10 @@ import { createBrowserRouter } from 'react-router-dom'
 import PublicLayout    from '@/layouts/PublicLayout'
 import AppLayout       from '@/layouts/AppLayout'
 import ProtectedRoute  from '@/components/auth/ProtectedRoute'
+import LoginPage       from '@/pages/auth/LoginPage'
+import RegisterPage    from '@/pages/auth/RegisterPage'
 
-// Placeholder pages — will be replaced in Sprint 1 FE tasks
+// Placeholder for pages not yet implemented
 const ComingSoon = ({ label }: { label: string }) => (
   <div className="flex h-full items-center justify-center text-gray-400 text-lg">
     {label} — coming soon
@@ -22,8 +24,8 @@ export const router = createBrowserRouter([
   {
     element: <PublicLayout />,
     children: [
-      { path: '/login',    element: <ComingSoon label="Login" /> },
-      { path: '/register', element: <ComingSoon label="Register" /> },
+      { path: '/login',    element: <LoginPage /> },
+      { path: '/register', element: <RegisterPage /> },
     ],
   },
 
