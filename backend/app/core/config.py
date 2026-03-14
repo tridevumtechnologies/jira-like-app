@@ -13,8 +13,8 @@ class Settings(BaseSettings):
     # Database
     DATABASE_URL: str
 
-    # Redis
-    REDIS_URL: str
+    # Optional legacy Redis setting. The app now runs with PostgreSQL only.
+    REDIS_URL: str | None = None
 
     # JWT
     SECRET_KEY: str

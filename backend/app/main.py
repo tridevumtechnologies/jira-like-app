@@ -10,16 +10,17 @@ from app.core.config import settings
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:  # type: ignore[type-arg]
-    # Auto-create all tables when running with SQLite (mock/dev mode).
-    # In production the real DB is managed by Alembic migrations.
-    if settings.DATABASE_URL.startswith("sqlite"):
-        from app.db.session import Base, engine
-        # Import models so they register with Base.metadata
-        import app.models.user       # noqa: F401
-        import app.models.project    # noqa: F401
-        import app.models.ticket     # noqa: F401
-        async with engine.begin() as conn:
-            await conn.run_sync(Base.metadata.create_all)
+    # Simple app startup: ensure tables exist for the configured database.
+    # This keeps local PostgreSQL setup working without a separate migration step.
+    from app.db.session import Base, engine
+
+    # Import models so they register with Base.metadata
+    import app.models.user       # noqa: F401
+    import app.models.project    # noqa: F401
+    import app.models.ticket     # noqa: F401
+
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
     yield
 
 
