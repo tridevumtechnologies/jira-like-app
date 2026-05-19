@@ -1,0 +1,38 @@
+# Git root-level ignore file for jira-like-app
+
+# Directories to ignore
+.git/
+.vscode/
+.idea/
+node_modules/
+.venv/
+venv/
+dist/
+build/
+__pycache__/
+.pytest_cache/
+
+# Environment files
+.env
+.env.local
+.env.*.local
+
+# IDE files
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Log files
+*.log
+npm-debug.log*
+
+# OS specific
+Thumbs.db
+
+# Project specific
+dev_mock.db
+dev.db
+.coverage
+htmlcov/
+poetry.lock
